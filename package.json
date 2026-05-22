@@ -1,0 +1,68 @@
+{
+  "name": "@kne/fastify-statistics",
+  "version": "0.1.0",
+  "description": "基于 Fastify 的数据采集与多周期聚合统计插件，支持缓冲写入、时区查询和自动 Cron 聚合",
+  "main": "index.js",
+  "scripts": {
+    "init": "husky",
+    "build:md": "npx @kne/md-doc",
+    "start:md": "npx @kne/md-doc --watch",
+    "prettier": "prettier --config .prettierrc --write '{libs/**/*,index}.{js,jsx,ts,tsx,json,css,scss}'",
+    "lint-staged": "npx lint-staged",
+    "test": "mocha test/**/*.test.js",
+    "test:coverage": "nyc --reporter=html --reporter=text mocha test/**/*.test.js"
+  },
+  "lint-staged": {
+    "{libs/**/*,index}.{js,jsx,ts,tsx,json,css,scss}": [
+      "prettier --config .prettierrc --write",
+      "git add"
+    ]
+  },
+  "files": [
+    "index.js",
+    "libs"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kne-union/fastify-statistics.git"
+  },
+  "keywords": [
+    "fastify",
+    "fastify-plugin",
+    "statistics",
+    "aggregation",
+    "data-collection",
+    "cron",
+    "time-series",
+    "period-stat",
+    "dayjs",
+    "sequelize"
+  ],
+  "author": "linzp",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/kne-union/fastify-statistics/issues"
+  },
+  "homepage": "https://github.com/kne-union/fastify-statistics#readme",
+  "peerDependencies": {
+    "@kne/fastify-namespace": "*",
+    "@kne/fastify-sequelize": "*",
+    "fastify-plugin": ">=5"
+  },
+  "devDependencies": {
+    "@fastify/env": "^5.0.2",
+    "@kne/fastify-sequelize": "^3.0.6",
+    "chai": "^6.2.2",
+    "fastify": "^5.4.0",
+    "fastify-plugin": "^5.0.1",
+    "husky": "^9.0.11",
+    "mocha": "^11.7.5",
+    "nodemon": "^3.1.3",
+    "nyc": "^17.1.0",
+    "prettier": "^3.2.5",
+    "sqlite3": "^5.1.7"
+  },
+  "dependencies": {
+    "dayjs": "^1.11.20"
+  }
+}

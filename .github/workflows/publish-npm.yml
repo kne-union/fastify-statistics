@@ -1,0 +1,13 @@
+name: Publish Npm Package
+on:
+  pull_request:
+    branches: [master]
+    types:
+      - closed
+jobs:
+  node-npm:
+    if: github.event.pull_request.merged == true
+    uses: kne-union/actions/.github/workflows/publish-node-workflow.yml@master
+    secrets: inherit
+    with:
+      package_name: '@kne/fastify-statistics'
