@@ -46,16 +46,19 @@
 
 | 属性名 | 类型 | 必填 | 默认值 | 说明 |
 |--------|------|------|--------|------|
-| channel | string | 是 | - | 数据通道，支持前缀匹配 |
+| channels | string | 是 | - | 数据通道(逗号分隔多个通道) |
 | startTime | string | 是 | - | 开始时间(ISO格式) |
 | endTime | string | 是 | - | 结束时间(ISO格式) |
 | attributeNames | string | 否 | 全部 | 属性名列表(逗号分隔) |
 | aggregates | string | 否 | 全部 | 聚合方法列表(逗号分隔): sum,avg,count,min,max |
 | timezone | string | 否 | 服务器时区 | 客户端时区(IANA格式，如 Asia/Shanghai) |
+| includeChildren | boolean | 否 | false | 是否包含子通道数据 |
 
-**通道匹配规则**：传入 `sensor` 会匹配 `sensor` 和 `sensor:*` 的所有通道。
+**通道匹配规则**：默认只精确匹配传入的 channels。当 `includeChildren=true` 时，传入 `sensor` 会匹配 `sensor` 和 `sensor:*` 的所有通道，返回树形结构。
 
 **返回格式**：
+
+默认（`includeChildren=false`）返回扁平列表：
 
 ```json
 {
@@ -73,6 +76,50 @@
   ]
 }
 ```
+
+`includeChildren=true` 时返回树形结构，子通道数据嵌套在 `children` 数组中：
+
+```json
+{
+  "channelMetas": {
+    "sensor": { "channel": "sensor", "title": "传感器", "description": "" }
+  },
+  "list": [
+    {
+      "channel": "sensor",
+      "items": [
+        {
+          "period": "h",
+          "time": "2026-05-22T08:00:00.000Z",
+          "data": { "default": 100 },
+          "unit": { "default": "℃" }
+        }
+      ],
+      "children": [
+        {
+          "channel": "sensor:temp",
+          "items": [
+            {
+              "period": "h",
+              "time": "2026-05-22T08:00:00.000Z",
+              "data": { "default": 25 },
+              "unit": { "default": "℃" }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+`includeChildren=true` 时 `list` 中每个节点包含：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| channel | string | 通道名称 |
+| items | array | 该通道的统计结果数组（按时间排序），每项包含 `period`、`time`、`data`、`unit` |
+| children | array | 子通道数组（递归结构，仅存在子通道时返回） |
 
 `data` 字段格式始终为对象（按属性名映射），根据聚合方法数量决定层级：
 
@@ -130,7 +177,7 @@
 
 | 属性名 | 类型 | 必填 | 默认值 | 说明 |
 |--------|------|------|--------|------|
-| channel | string | 是 | - | 数据通道 |
+| channels | string | 是 | - | 数据通道(逗号分隔多个通道) |
 | attributeNames | string | 否 | 全部 | 属性名列表(逗号分隔) |
 | aggregates | string | 否 | 全部 | 聚合方法列表(逗号分隔): sum,avg,count,min,max |
 | timezone | string | 否 | 服务器时区 | 客户端时区(IANA格式，如 Asia/Shanghai) |
@@ -139,7 +186,7 @@
 **响应格式**：`Content-Type: text/event-stream`
 
 ```
-data: {"channel":"sensor","period":"h","time":"...","data":{"default":100}}
+data: {"channelMetas":{},"list":[{"channel":"sensor","items":[{"period":"h","time":"...","data":{"default":100}}],"children":[...]}]}
 
 event: timeout
 data: {"message":"连接已超过30分钟，自动断开"}
