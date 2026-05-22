@@ -1,5 +1,28 @@
 const fp = require('fastify-plugin');
 
+const ITEM_PROPERTIES = {
+  channel: { type: 'string', description: '数据通道' },
+  title: { type: 'string', description: '标题' },
+  description: { type: 'string', description: '描述' },
+  attributeName: { type: 'string', description: '属性名' },
+  data: {
+    description: '数据值(数字或属性对象)',
+    anyOf: [{ type: 'number' }, { type: 'object' }]
+  },
+  unit: { type: 'string', description: '数据单位' },
+  time: { type: 'string', description: '采集时间(ISO格式)' }
+};
+
+const parseCommaList = value => (value ? value.split(',') : undefined);
+
+const parseDate = value => {
+  const date = new Date(value);
+  if (isNaN(date.getTime())) {
+    throw new Error(`Invalid date: ${value}`);
+  }
+  return date;
+};
+
 module.exports = fp(async (fastify, options) => {
   const { services } = fastify[options.name];
   fastify.post(
@@ -14,36 +37,14 @@ module.exports = fp(async (fastify, options) => {
             {
               type: 'object',
               required: ['channel', 'data'],
-              properties: {
-                channel: { type: 'string', description: '数据通道' },
-                title: { type: 'string', description: '标题' },
-                description: { type: 'string', description: '描述' },
-                attributeName: { type: 'string', description: '属性名' },
-                data: {
-                  description: '数据值(数字或属性对象)',
-                  anyOf: [{ type: 'number' }, { type: 'object' }]
-                },
-                unit: { type: 'string', description: '数据单位' },
-                time: { type: 'string', description: '采集时间(ISO格式)' }
-              }
+              properties: ITEM_PROPERTIES
             },
             {
               type: 'array',
               items: {
                 type: 'object',
                 required: ['channel', 'data'],
-                properties: {
-                  channel: { type: 'string', description: '数据通道' },
-                  title: { type: 'string', description: '标题' },
-                  description: { type: 'string', description: '描述' },
-                  attributeName: { type: 'string', description: '属性名' },
-                  data: {
-                    description: '数据值(数字或属性对象)',
-                    anyOf: [{ type: 'number' }, { type: 'object' }]
-                  },
-                  unit: { type: 'string', description: '数据单位' },
-                  time: { type: 'string', description: '采集时间(ISO格式)' }
-                }
+                properties: ITEM_PROPERTIES
               }
             }
           ]
@@ -52,20 +53,20 @@ module.exports = fp(async (fastify, options) => {
     },
     async request => {
       const items = Array.isArray(request.body) ? request.body : [request.body];
-      const results = [];
-      for (const item of items) {
-        const { channel, title, description, attributeName, data, unit, time } = item;
-        const result = await services.collect({
-          channel,
-          title: title || channel,
-          description,
-          attributeName,
-          data,
-          unit,
-          time: time ? new Date(time) : new Date()
-        });
-        results.push(result);
-      }
+      const results = await Promise.all(
+        items.map(async item => {
+          const { channel, title, description, attributeName, data, unit, time } = item;
+          return services.collect({
+            channel,
+            title: title || channel,
+            description,
+            attributeName,
+            data,
+            unit,
+            time: time ? parseDate(time) : new Date()
+          });
+        })
+      );
       return Array.isArray(request.body) ? results : results[0];
     }
   );
@@ -95,11 +96,53 @@ module.exports = fp(async (fastify, options) => {
       const { channel, startTime, endTime, attributeNames, aggregates, timezone } = request.query;
       return services.query({
         channel,
-        startTime: new Date(startTime),
-        endTime: new Date(endTime),
-        attributeNames: attributeNames ? attributeNames.split(',') : undefined,
-        aggregates: aggregates ? aggregates.split(',') : undefined,
+        startTime: parseDate(startTime),
+        endTime: parseDate(endTime),
+        attributeNames: parseCommaList(attributeNames),
+        aggregates: parseCommaList(aggregates),
         timezone: timezone || undefined
+      });
+    }
+  );
+
+  fastify.get(
+    `${options.prefix}/sse`,
+    {
+      onRequest: options.getAuthenticate('read'),
+      schema: {
+        description: 'SSE实时统计推送',
+        summary: '实时统计SSE',
+        query: {
+          type: 'object',
+          required: ['channel'],
+          properties: {
+            channel: { type: 'string', description: '数据通道' },
+            attributeNames: { type: 'string', description: '属性名列表(逗号分隔)' },
+            aggregates: { type: 'string', description: '聚合方法列表(逗号分隔): sum,avg,count,min,max' },
+            timezone: { type: 'string', description: '客户端时区(如 Asia/Shanghai)' },
+            interval: { type: 'number', description: '推送间隔秒数(最小5)', default: 5 }
+          }
+        }
+      }
+    },
+    async (request, reply) => {
+      const { channel, attributeNames, aggregates, timezone, interval } = request.query;
+      await services.sseStream.send(reply, {
+        name: 'query',
+        params: { channel, attributeNames, aggregates, timezone },
+        fetchData: async params => {
+          const now = new Date();
+          const startTime = new Date(now.getTime() - 3600000);
+          return services.query({
+            channel: params.channel,
+            startTime,
+            endTime: now,
+            attributeNames: parseCommaList(params.attributeNames),
+            aggregates: parseCommaList(params.aggregates),
+            timezone: params.timezone || undefined
+          });
+        },
+        interval: interval || 5
       });
     }
   );

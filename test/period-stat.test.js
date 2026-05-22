@@ -865,6 +865,33 @@ describe('@kne/fastify-statistics', function () {
         await fastify.close();
       });
 
+      it('should skip undefined aggregate values from data-record in query', async () => {
+        const { fastify, dataRecordFindAllResult } = createQueryMockFastify();
+        await mockPeriodStatService(fastify, { name: 'statistics' });
+
+        const now = new Date();
+        const startTime = new Date(now.getTime() - 3600000);
+        const endTime = new Date(now.getTime() + 3600000);
+
+        dataRecordFindAllResult.push({
+          channel: 'sensor', attributeName: 'temperature',
+          title: '温度', unit: '℃',
+          sum: 50, avg: undefined, count: undefined, min: undefined, max: undefined
+        });
+
+        const results = await fastify.statistics.services.periodStat.query({
+          channel: 'sensor', startTime, endTime, aggregates: ['sum', 'avg']
+        });
+
+        const hourResult = results.find(r => r.period === 'h');
+        if (hourResult) {
+          // sum=50 is the only non-null/undefined aggregate, formatted as { attributeName: value }
+          expect(hourResult.data).to.deep.equal({ temperature: 50 });
+        }
+
+        await fastify.close();
+      });
+
       it('should use startTime as drStartTime when startTime is after currentHourStart', async () => {
         const { fastify, periodStatRows, dataRecordFindAllResult, findAllCalls } = createQueryMockFastify();
         await mockPeriodStatService(fastify, { name: 'statistics' });

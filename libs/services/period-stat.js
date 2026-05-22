@@ -142,7 +142,7 @@ module.exports = fp(async (fastify, options) => {
 
     const grouped = {};
     for (const row of rows) {
-      const key = `${row.channel}|${row.attributeName || ''}`;
+      const key = JSON.stringify([row.channel, row.attributeName || '']);
       if (!grouped[key]) {
         grouped[key] = {
           channel: row.channel,
@@ -188,10 +188,10 @@ module.exports = fp(async (fastify, options) => {
         });
       }
       if (mins.length > 0) {
-        records.push({ ...base, aggregate: 'min', data: Math.min(...mins) });
+        records.push({ ...base, aggregate: 'min', data: mins.reduce((a, b) => Math.min(a, b), Infinity) });
       }
       if (maxs.length > 0) {
-        records.push({ ...base, aggregate: 'max', data: Math.max(...maxs) });
+        records.push({ ...base, aggregate: 'max', data: maxs.reduce((a, b) => Math.max(a, b), -Infinity) });
       }
     }
 

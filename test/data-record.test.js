@@ -526,15 +526,60 @@ describe('@kne/fastify-statistics', function () {
       });
     });
 
+    describe('persistBuffer 错误处理测试', () => {
+      it('should log error when cache.set fails in persistBuffer', async () => {
+        const { fastify, bulkCreateCalls } = createMockFastify();
+        let errorLogged = false;
+        const origLogError = fastify.log.error;
+        fastify.log.error = function (...args) {
+          if (args[1] === 'Failed to persist buffer to cache') {
+            errorLogged = true;
+          }
+          return origLogError ? origLogError.apply(this, args) : undefined;
+        };
+
+        let setCallCount = 0;
+        const cache = {
+          get: async () => null,
+          set: async (key, value) => {
+            setCallCount++;
+            if (setCallCount === 1) {
+              throw new Error('Cache write error');
+            }
+          }
+        };
+
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1000,
+          cache
+        });
+
+        fastify.statistics.services.dataRecord.collect({
+          channel: 'ch1',
+          title: 'test',
+          data: 1,
+          time: new Date()
+        });
+
+        await fastify.close();
+
+        expect(errorLogged).to.be.true;
+        fastify.log.error = origLogError;
+      });
+    });
+
     describe('定时 flush 错误处理测试', () => {
       it('should catch and log error when flush fails in timer', async () => {
         const { fastify, mockModel, cache } = createMockFastify({ flushInterval: 50 });
         let errorLogged = false;
-        const originalConsoleError = console.error;
-        console.error = (...args) => {
-          if (args[0] && args[0].includes && args[0].includes('Failed to flush')) {
+        const origLogError = fastify.log.error;
+        fastify.log.error = function (...args) {
+          if (args[1] === 'Failed to flush data records') {
             errorLogged = true;
           }
+          return origLogError ? origLogError.apply(this, args) : undefined;
         };
 
         let failCount = 0;
@@ -565,18 +610,19 @@ describe('@kne/fastify-statistics', function () {
 
         expect(errorLogged).to.be.true;
 
-        console.error = originalConsoleError;
+        fastify.log.error = origLogError;
         await fastify.close();
       });
 
       it('should catch and log error when flush fails on buffer overflow', async () => {
         const { fastify, mockModel, cache } = createMockFastify({ maxBufferSize: 1 });
         let errorLogged = false;
-        const originalConsoleError = console.error;
-        console.error = (...args) => {
-          if (args[0] && args[0].includes && args[0].includes('Failed to flush')) {
+        const origLogError = fastify.log.error;
+        fastify.log.error = function (...args) {
+          if (args[1] === 'Failed to flush data records on buffer overflow') {
             errorLogged = true;
           }
+          return origLogError ? origLogError.apply(this, args) : undefined;
         };
 
         let failCount = 0;
@@ -607,7 +653,7 @@ describe('@kne/fastify-statistics', function () {
 
         expect(errorLogged).to.be.true;
 
-        console.error = originalConsoleError;
+        fastify.log.error = origLogError;
         await fastify.close();
       });
     });

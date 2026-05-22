@@ -6,14 +6,17 @@ module.exports = fp(async (fastify, options) => {
   const { models } = fastify[options.name];
   const { Op } = fastify.sequelize.Sequelize;
   const sequelize = fastify.sequelize.instance;
+  const log = fastify.log;
   const cache = options.cache || null;
 
   const flushInterval = options.collectFlushInterval || 5000;
   const maxBufferSize = options.collectMaxBufferSize || 1000;
+  const maxBufferOverflow = options.collectMaxBufferOverflow || maxBufferSize * 2;
 
   let buffer = [];
   let seq = 0;
   let flushTimer = null;
+  let isFlushing = false;
 
   const nextSeq = () => {
     seq += 1;
@@ -22,7 +25,11 @@ module.exports = fp(async (fastify, options) => {
 
   const persistBuffer = async () => {
     if (!cache || buffer.length === 0) return;
-    await cache.set(BUFFER_CACHE_KEY, buffer);
+    try {
+      await cache.set(BUFFER_CACHE_KEY, buffer);
+    } catch (e) {
+      log.error({ err: e }, 'Failed to persist buffer to cache');
+    }
   };
 
   const restoreBuffer = async () => {
@@ -35,7 +42,8 @@ module.exports = fp(async (fastify, options) => {
   };
 
   const flush = async () => {
-    if (buffer.length === 0) return;
+    if (buffer.length === 0 || isFlushing) return;
+    isFlushing = true;
     const items = buffer.splice(0, buffer.length);
     try {
       const records = items.map(item => {
@@ -52,8 +60,10 @@ module.exports = fp(async (fastify, options) => {
       }
       await cache.set(BUFFER_CACHE_KEY, buffer);
     } catch (e) {
-      buffer = [...items, ...buffer];
+      buffer = [...items, ...buffer].slice(-maxBufferOverflow);
       throw e;
+    } finally {
+      isFlushing = false;
     }
   };
 
@@ -63,7 +73,7 @@ module.exports = fp(async (fastify, options) => {
       try {
         await flush();
       } catch (e) {
-        console.error('Failed to flush data records:', e);
+        log.error({ err: e }, 'Failed to flush data records');
       }
     }, flushInterval);
     flushTimer.unref();
@@ -123,9 +133,10 @@ module.exports = fp(async (fastify, options) => {
         buffer.push({ ...item, channel, _seq: nextSeq() });
       }
     }
+    startFlushTimer();
     if (buffer.length >= maxBufferSize) {
       flush().catch(e => {
-        console.error('Failed to flush data records:', e);
+        log.error({ err: e }, 'Failed to flush data records on buffer overflow');
       });
     }
   };
