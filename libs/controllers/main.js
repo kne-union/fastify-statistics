@@ -120,7 +120,7 @@ module.exports = fp(async (fastify, options) => {
             attributeNames: { type: 'string', description: '属性名列表(逗号分隔)' },
             aggregates: { type: 'string', description: '聚合方法列表(逗号分隔): sum,avg,count,min,max' },
             timezone: { type: 'string', description: '客户端时区(如 Asia/Shanghai)' },
-            interval: { type: 'number', description: '推送间隔秒数(最小5)', default: 5 }
+            interval: { type: 'number', description: '推送间隔秒数', default: 5 }
           }
         }
       }
