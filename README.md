@@ -23,6 +23,7 @@ npm i --save @kne/fastify-statistics
 - **多周期聚合**：支持时(h)、日(d)、周(w)、月(m)、季(q)、年(y) 六种统计周期，自动通过 Cron 定时聚合
 - **聚合方法**：支持 sum、avg、count、min、max 五种聚合计算
 - **灵活查询**：按通道、时间范围、属性名、聚合方法查询统计结果，自动合并当前小时未聚合的原始数据
+- **SSE 实时推送**：基于 Server-Sent Events 的实时数据推送，支持自定义间隔、心跳保活、超时断开和缓存复用
 - **时区支持**：查询时支持传入客户端时区（IANA 格式），解决客户端与服务器时区不一致问题
 - **事务安全**：所有数据库写操作使用事务保证原子性，聚合操作支持幂等（upsert）
 - **dayjs 时间处理**：所有时间操作统一使用 dayjs 处理，支持时区扩展
@@ -150,6 +151,65 @@ npm i --save @kne/fastify-statistics
 | `services.periodStat.query(params)` | 同 `services.query` |
 | `services.dataRecord.collect(data)` | 同 `services.collect` |
 | `services.dataRecord.flush()` | 手动刷新缓冲区 |
+| `services.sseStream.send(reply, config)` | 发送 SSE 实时数据流（详见下方） |
+
+### SSE 实时推送
+
+#### GET `{prefix}/sse`
+
+基于 Server-Sent Events 的实时统计推送，自动查询最近一小时的统计数据并按指定间隔推送。
+
+**查询参数**：
+
+| 属性名 | 类型 | 必填 | 默认值 | 说明 |
+|--------|------|------|--------|------|
+| channel | string | 是 | - | 数据通道 |
+| attributeNames | string | 否 | 全部 | 属性名列表(逗号分隔) |
+| aggregates | string | 否 | 全部 | 聚合方法列表(逗号分隔): sum,avg,count,min,max |
+| timezone | string | 否 | 服务器时区 | 客户端时区(IANA格式，如 Asia/Shanghai) |
+| interval | number | 否 | `5` | 推送间隔秒数 |
+
+**响应格式**：`Content-Type: text/event-stream`
+
+```
+data: {"channel":"sensor","period":"h","time":"...","data":100}
+
+event: timeout
+data: {"message":"连接已超过30分钟，自动断开"}
+
+: heartbeat
+
+event: error
+data: {"message":"错误信息"}
+```
+
+| 事件类型 | 说明 |
+|----------|------|
+| `data`（无 event 字段） | 正常数据推送，内容为查询结果的 JSON |
+| `timeout` | 连接超过 maxDuration 后自动断开通知 |
+| `error` | fetchData 出错时的错误事件 |
+| 注释行（`: heartbeat`） | 心跳保活 |
+
+**程序化调用**：`services.sseStream.send(reply, config)`
+
+| config 属性 | 类型 | 必填 | 默认值 | 说明 |
+|-------------|------|------|--------|------|
+| name | string | 是 | - | 缓存键名称标识 |
+| params | object | 是 | - | 传递给 fetchData 的参数 |
+| fetchData | function | 是 | - | 异步函数 `(params) => data`，获取推送数据 |
+| interval | number | 否 | `5` | 推送间隔秒数 |
+| heartbeatInterval | number | 否 | `30000` | 心跳间隔(ms) |
+| maxDuration | number | 否 | `1800000` | 最大连接时长(ms)，超时自动断开 |
+
+**返回值**：SSE 上下文对象
+
+| 方法 | 说明 |
+|------|------|
+| `isConnected()` | 返回当前连接状态 |
+| `close()` | 手动关闭 SSE 连接 |
+| `onClose(callback)` | 注册连接关闭回调，若已断开则立即执行 |
+
+**缓存机制**：当插件配置了 `cache` 时，SSE 推送的数据会按时间窗口缓存，相同 `name`+`params`+`interval` 的请求在同一时间窗口内会命中缓存，避免重复调用 `fetchData`。
 
 ### 数据模型
 
