@@ -41,13 +41,28 @@ module.exports = fp(async (fastify, options) => {
     }
   };
 
+  const getRootChannel = channel => channel.split(':')[0];
+
+  const ensureChannelMeta = async (metaList, transaction) => {
+    for (const meta of metaList) {
+      const options = {
+        where: { channel: meta.channel },
+        defaults: { title: meta.title || meta.channel, description: meta.description || null }
+      };
+      if (transaction) {
+        options.transaction = transaction;
+      }
+      await models.channelMeta.findOrCreate(options);
+    }
+  };
+
   const flush = async () => {
     if (buffer.length === 0 || isFlushing) return;
     isFlushing = true;
     const items = buffer.splice(0, buffer.length);
     try {
       const records = items.map(item => {
-        const { _seq, ...data } = item;
+        const { _seq, title, description, ...data } = item;
         return data;
       });
       const transaction = await sequelize.transaction();
@@ -108,15 +123,22 @@ module.exports = fp(async (fastify, options) => {
   const collectImmediate = async data => {
     const expanded = expandData(data);
     const records = [];
+    const metaList = [];
     for (const item of expanded) {
       const channels = expandChannel(item.channel);
+      const rootChannel = getRootChannel(item.channel);
+      if (!metaList.some(m => m.channel === rootChannel)) {
+        metaList.push({ channel: rootChannel, title: item.title, description: item.description });
+      }
       for (const channel of channels) {
-        const { data: _, ...rest } = item;
+        const { data: _, title, description, ...rest } = item;
         records.push({ ...rest, channel });
       }
     }
+
     const transaction = await sequelize.transaction();
     try {
+      await ensureChannelMeta(metaList, transaction);
       await models.dataRecord.bulkCreate(records, { transaction });
       await transaction.commit();
     } catch (e) {
@@ -125,14 +147,20 @@ module.exports = fp(async (fastify, options) => {
     }
   };
 
-  const collectBuffered = data => {
+  const collectBuffered = async data => {
     const expanded = expandData(data);
+    const metaList = [];
     for (const item of expanded) {
       const channels = expandChannel(item.channel);
+      const rootChannel = getRootChannel(item.channel);
+      if (!metaList.some(m => m.channel === rootChannel)) {
+        metaList.push({ channel: rootChannel, title: item.title, description: item.description });
+      }
       for (const channel of channels) {
         buffer.push({ ...item, channel, _seq: nextSeq() });
       }
     }
+    await ensureChannelMeta(metaList);
     startFlushTimer();
     if (buffer.length >= maxBufferSize) {
       flush().catch(e => {

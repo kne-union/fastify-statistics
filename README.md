@@ -218,12 +218,11 @@ data: {"message":"错误信息"}
 | 属性名 | 类型 | 说明 |
 |--------|------|------|
 | channel | STRING | 数据通道(必填) |
-| title | STRING | 标题(必填) |
-| description | TEXT | 描述 |
 | attributeName | STRING | 属性名(默认 default) |
 | data | DECIMAL(16,2) | 数据值(必填) |
-| unit | STRING | 数据单位 |
 | time | DATE | 采集时间(必填) |
+
+> `title`、`description`、`unit` 已移至 `channel-meta` 表，按 `(channel, attributeName)` 关联。
 
 #### period-stat（周期统计）
 
@@ -232,11 +231,24 @@ data: {"message":"错误信息"}
 | period | STRING | 统计周期(必填) |
 | time | DATE | 统计时间(必填) |
 | channel | STRING | 数据通道(必填) |
-| title | STRING | 标题(必填) |
-| description | TEXT | 描述 |
 | attributeName | STRING | 属性名(默认 default) |
 | aggregate | ENUM | 聚合方法(必填): sum/avg/count/min/max |
 | data | DECIMAL(16,2) | 统计数据值(必填) |
-| unit | STRING | 数据单位 |
+
+> `title`、`description`、`unit` 已移至 `channel-meta` 表，按 `(channel, attributeName)` 关联。
 
 **唯一约束**：`(period, channel, attributeName, aggregate, time)`
+
+#### channel-meta（通道元数据）
+
+| 属性名 | 类型 | 说明 |
+|--------|------|------|
+| channel | STRING | 数据通道(联合主键) |
+| attributeName | STRING | 属性名(联合主键，默认 default) |
+| title | STRING | 标题(必填) |
+| description | TEXT | 描述 |
+| unit | STRING | 数据单位 |
+
+**唯一约束**：`(channel, attributeName)`
+
+**说明**：`title`、`description`、`unit` 三个字段从 `data-record` 和 `period-stat` 中提取到 `channel-meta` 表，按 `channel`+`attributeName` 唯一存储。首次采集某通道数据时自动创建元数据记录，后续采集忽略（不更新）。

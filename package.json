@@ -1,6 +1,6 @@
 {
   "name": "@kne/fastify-statistics",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "基于 Fastify 的数据采集与多周期聚合统计插件，支持缓冲写入、时区查询和自动 Cron 聚合",
   "main": "index.js",
   "scripts": {
@@ -63,6 +63,7 @@
     "sqlite3": "^5.1.7"
   },
   "dependencies": {
-    "dayjs": "^1.11.20"
+    "dayjs": "^1.11.20",
+    "lodash": "^4.18.1"
   }
 }

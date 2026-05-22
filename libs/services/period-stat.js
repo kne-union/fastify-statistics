@@ -68,7 +68,7 @@ const AGGREGATE_TYPES = [
   { key: 'max', fn: 'MAX', label: '最大' }
 ];
 
-const UPSERT_FIELDS = ['data', 'title', 'unit', 'description'];
+const UPSERT_FIELDS = ['data', 'unit'];
 
 module.exports = fp(async (fastify, options) => {
   const { models } = fastify[options.name];
@@ -77,14 +77,7 @@ module.exports = fp(async (fastify, options) => {
 
   const aggregateFromDataRecord = async (period, startTime, endTime) => {
     const results = await models.dataRecord.findAll({
-      attributes: [
-        'channel',
-        'attributeName',
-        [fn('MAX', col('title')), 'title'],
-        [fn('MAX', col('unit')), 'unit'],
-        [fn('MAX', col('description')), 'description'],
-        ...AGGREGATE_TYPES.map(({ key, fn: aggFn }) => [fn(aggFn, col('data')), key])
-      ],
+      attributes: ['channel', 'attributeName', [fn('MAX', col('unit')), 'unit'], ...AGGREGATE_TYPES.map(({ key, fn: aggFn }) => [fn(aggFn, col('data')), key])],
       where: {
         time: { [Op.between]: [startTime, endTime] }
       },
@@ -102,11 +95,9 @@ module.exports = fp(async (fastify, options) => {
           time: startTime,
           channel: row.channel,
           attributeName: row.attributeName,
-          title: row.title,
-          description: row.description || null,
           aggregate: key,
           data: parseFloat(value),
-          unit: row.unit || null
+          unit: row.unit
         });
       }
     }
@@ -147,9 +138,6 @@ module.exports = fp(async (fastify, options) => {
         grouped[key] = {
           channel: row.channel,
           attributeName: row.attributeName,
-          title: row.title,
-          unit: row.unit,
-          description: row.description,
           items: []
         };
       }
@@ -169,9 +157,7 @@ module.exports = fp(async (fastify, options) => {
         time: startTime,
         channel: group.channel,
         attributeName: group.attributeName,
-        title: group.title,
-        description: group.description || null,
-        unit: group.unit || null
+        unit: group.items[0]?.unit || null
       };
 
       if (sums.length > 0) {
@@ -246,41 +232,39 @@ module.exports = fp(async (fastify, options) => {
   }
 
   const formatGroupData = (items, hasAttributeNamesFilter) => {
-    const attrSet = new Set();
     const aggSet = new Set();
+    const unitMap = {};
     for (const item of items) {
-      attrSet.add(item.attributeName || 'default');
       aggSet.add(item.aggregate);
+      if (item.unit !== undefined && item.unit !== null && !((item.attributeName || 'default') in unitMap)) {
+        unitMap[item.attributeName || 'default'] = item.unit;
+      }
     }
 
-    const shouldFlattenAttribute = !hasAttributeNamesFilter && attrSet.size === 1 && attrSet.has('default');
     const hasMultipleAggregates = aggSet.size > 1;
 
-    if (shouldFlattenAttribute) {
-      if (hasMultipleAggregates) {
-        const data = {};
-        for (const item of items) {
-          data[item.aggregate] = item.data;
-        }
-        return data;
-      }
-      return items[0].data;
-    }
-
+    let data;
     if (hasMultipleAggregates) {
-      const data = {};
+      data = {};
       for (const item of items) {
         if (!data[item.aggregate]) data[item.aggregate] = {};
         data[item.aggregate][item.attributeName || 'default'] = item.data;
       }
-      return data;
+    } else {
+      data = {};
+      for (const item of items) {
+        data[item.attributeName || 'default'] = item.data;
+      }
     }
 
-    const data = {};
-    for (const item of items) {
-      data[item.attributeName || 'default'] = item.data;
+    const result = { data };
+
+    const unitEntries = Object.entries(unitMap).filter(([, v]) => v !== undefined && v !== null);
+    if (unitEntries.length > 0) {
+      result.unit = Object.fromEntries(unitEntries);
     }
-    return data;
+
+    return result;
   };
 
   const query = async ({ channel, startTime, endTime, attributeNames, aggregates: queryAggregates, timezone: tz }) => {
@@ -331,13 +315,7 @@ module.exports = fp(async (fastify, options) => {
       };
 
       const dataRecords = await models.dataRecord.findAll({
-        attributes: [
-          'channel',
-          'attributeName',
-          [fn('MAX', col('title')), 'title'],
-          [fn('MAX', col('unit')), 'unit'],
-          ...AGGREGATE_TYPES.filter(a => aggregateList.includes(a.key)).map(({ key, fn: aggFn }) => [fn(aggFn, col('data')), key])
-        ],
+        attributes: ['channel', 'attributeName', [fn('MAX', col('unit')), 'unit'], ...AGGREGATE_TYPES.filter(a => aggregateList.includes(a.key)).map(({ key, fn: aggFn }) => [fn(aggFn, col('data')), key])],
         where: drWhere,
         group: ['channel', 'attributeName'],
         raw: true
@@ -352,9 +330,9 @@ module.exports = fp(async (fastify, options) => {
             time: currentHourStart,
             channel: row.channel,
             attributeName: row.attributeName || 'default',
-            title: row.title,
             aggregate: key,
-            data: parseFloat(value)
+            data: parseFloat(value),
+            unit: row.unit
           });
         }
       }
@@ -377,18 +355,36 @@ module.exports = fp(async (fastify, options) => {
 
     const results = [];
     for (const group of Object.values(grouped)) {
-      const data = formatGroupData(group._items, attributeNames && attributeNames.length > 0);
-      results.push({
+      const { data, unit } = formatGroupData(group._items, attributeNames && attributeNames.length > 0);
+      const item = {
         channel: group.channel,
         period: group.period,
         time: group.time,
         data
-      });
+      };
+      if (unit !== undefined) item.unit = unit;
+      results.push(item);
     }
 
     results.sort((a, b) => dayjs(a.time).valueOf() - dayjs(b.time).valueOf());
 
-    return results;
+    const rootChannelSet = new Set();
+    for (const r of results) {
+      rootChannelSet.add(r.channel.split(':')[0]);
+    }
+
+    let channelMetas = {};
+    if (rootChannelSet.size > 0) {
+      const metas = await models.channelMeta.findAll({
+        where: { channel: { [Op.in]: [...rootChannelSet] } },
+        raw: true
+      });
+      for (const meta of metas) {
+        channelMetas[meta.channel] = meta;
+      }
+    }
+
+    return { channelMetas, list: results };
   };
 
   Object.assign(fastify[options.name].services, {

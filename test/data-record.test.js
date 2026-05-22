@@ -8,6 +8,7 @@ const mockDataRecordService = (fastify, options) => {
 
 const createMockFastify = ({ flushInterval = 100, maxBufferSize = 3 } = {}) => {
   const bulkCreateCalls = [];
+  const channelMetaCalls = [];
   const cacheStore = {};
   const mockTransaction = {
     commit: async () => {},
@@ -18,6 +19,12 @@ const createMockFastify = ({ flushInterval = 100, maxBufferSize = 3 } = {}) => {
       bulkCreate: async (records) => {
         bulkCreateCalls.push([...records]);
         return records;
+      }
+    },
+    channelMeta: {
+      findOrCreate: async (opts) => {
+        channelMetaCalls.push(opts);
+        return [{ ...opts.defaults, ...opts.where }, false];
       }
     }
   };
@@ -41,14 +48,14 @@ const createMockFastify = ({ flushInterval = 100, maxBufferSize = 3 } = {}) => {
     }
   };
 
-  return { fastify, bulkCreateCalls, cacheStore, mockModel, cache };
+  return { fastify, bulkCreateCalls, channelMetaCalls, cacheStore, mockModel, cache };
 };
 
 describe('@kne/fastify-statistics', function () {
   describe('数据采集接口测试', () => {
     describe('无缓存模式（即时入库）', () => {
       it('should write to DB immediately when no cache is provided', async () => {
-        const { fastify, bulkCreateCalls } = createMockFastify();
+        const { fastify, bulkCreateCalls, channelMetaCalls } = createMockFastify();
         await mockDataRecordService(fastify, {
           name: 'statistics',
           collectFlushInterval: 60000,
@@ -64,12 +71,19 @@ describe('@kne/fastify-statistics', function () {
 
         expect(bulkCreateCalls.length).to.equal(1);
         expect(bulkCreateCalls[0][0].channel).to.equal('ch1');
+        expect(bulkCreateCalls[0][0].title).to.be.undefined;
+        expect(bulkCreateCalls[0][0].description).to.be.undefined;
+        expect(bulkCreateCalls[0][0].unit).to.be.undefined;
+
+        expect(channelMetaCalls.length).to.equal(1);
+        expect(channelMetaCalls[0].where.channel).to.equal('ch1');
+        expect(channelMetaCalls[0].defaults.title).to.equal('test');
 
         await fastify.close();
       });
 
       it('should write multiple expanded records immediately when no cache', async () => {
-        const { fastify, bulkCreateCalls } = createMockFastify();
+        const { fastify, bulkCreateCalls, channelMetaCalls } = createMockFastify();
         await mockDataRecordService(fastify, {
           name: 'statistics',
           collectFlushInterval: 60000,
@@ -85,6 +99,9 @@ describe('@kne/fastify-statistics', function () {
 
         expect(bulkCreateCalls.length).to.equal(1);
         expect(bulkCreateCalls[0].length).to.equal(6);
+        // channel-meta should be created for root channel only (a)
+        expect(channelMetaCalls.length).to.equal(1);
+        expect(channelMetaCalls[0].where.channel).to.equal('a');
 
         await fastify.close();
       });
