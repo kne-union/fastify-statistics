@@ -58,24 +58,32 @@
 **返回格式**：
 
 ```json
-[
-  {
-    "channel": "sensor",
-    "period": "h",
-    "time": "2026-05-22T08:00:00.000Z",
-    "data": 100
-  }
-]
+{
+  "channelMetas": {
+    "sensor": { "channel": "sensor", "title": "传感器", "description": "" }
+  },
+  "list": [
+    {
+      "channel": "sensor",
+      "period": "h",
+      "time": "2026-05-22T08:00:00.000Z",
+      "data": { "default": 100 },
+      "unit": { "default": "℃" }
+    }
+  ]
+}
 ```
 
-`data` 字段格式根据查询条件动态决定：
+`data` 字段格式始终为对象（按属性名映射），根据聚合方法数量决定层级：
 
 | 条件 | data 格式 | 示例 |
 |------|-----------|------|
-| 单属性 + 单聚合 | number | `100` |
-| 单属性 + 多聚合 | object | `{"sum": 100, "avg": 50}` |
-| 多属性 + 单聚合 | object | `{"temperature": 25, "humidity": 60}` |
-| 多属性 + 多聚合 | 嵌套object | `{"sum": {"temperature": 25}, "avg": {"temperature": 12.5}}` |
+| 单聚合 | object | `{"default": 100}` 或 `{"temperature": 25, "humidity": 60}` |
+| 多聚合 | 嵌套object | `{"sum": {"default": 100}, "avg": {"default": 50}}` 或 `{"sum": {"temperature": 25}, "avg": {"temperature": 12.5}}` |
+
+`unit` 字段为对象，按属性名映射单位：`{"default": "℃"}` 或 `{"temperature": "℃", "humidity": "%"}`
+
+> **注意**：查询结果中 `aggregate` 不作为独立字段返回。聚合方法（如 sum、avg）被用作 `data` 对象的键名。例如多聚合时 `data` 为 `{"sum": {"default": 100}, "avg": {"default": 50}}`，而非 `[{aggregate: "sum", data: 100}, {aggregate: "avg", data: 50}]`。
 
 ### 统计周期
 
@@ -131,7 +139,7 @@
 **响应格式**：`Content-Type: text/event-stream`
 
 ```
-data: {"channel":"sensor","period":"h","time":"...","data":100}
+data: {"channel":"sensor","period":"h","time":"...","data":{"default":100}}
 
 event: timeout
 data: {"message":"连接已超过30分钟，自动断开"}
@@ -177,12 +185,12 @@ data: {"message":"错误信息"}
 | 属性名 | 类型 | 说明 |
 |--------|------|------|
 | channel | STRING | 数据通道(必填) |
-| title | STRING | 标题(必填) |
-| description | TEXT | 描述 |
 | attributeName | STRING | 属性名(默认 default) |
 | data | DECIMAL(16,2) | 数据值(必填) |
-| unit | STRING | 数据单位 |
 | time | DATE | 采集时间(必填) |
+| unit | STRING | 数据单位 |
+
+> `title`、`description` 已移至 `channel-meta` 表，按 root channel 关联。
 
 #### period-stat（周期统计）
 
@@ -191,11 +199,23 @@ data: {"message":"错误信息"}
 | period | STRING | 统计周期(必填) |
 | time | DATE | 统计时间(必填) |
 | channel | STRING | 数据通道(必填) |
-| title | STRING | 标题(必填) |
-| description | TEXT | 描述 |
 | attributeName | STRING | 属性名(默认 default) |
 | aggregate | ENUM | 聚合方法(必填): sum/avg/count/min/max |
 | data | DECIMAL(16,2) | 统计数据值(必填) |
 | unit | STRING | 数据单位 |
 
+> `title`、`description` 已移至 `channel-meta` 表，按 root channel 关联。
+
 **唯一约束**：`(period, channel, attributeName, aggregate, time)`
+
+#### channel-meta（通道元数据）
+
+| 属性名 | 类型 | 说明 |
+|--------|------|------|
+| channel | STRING | 数据通道(唯一键) |
+| title | STRING | 标题(必填) |
+| description | TEXT | 描述 |
+
+**唯一约束**：`channel`
+
+**说明**：`channel-meta` 按 root channel（一级通道）唯一存储，一条元数据被所有以该 root channel 为前缀的子通道共享。首次采集某通道数据时，自动以其 root channel 创建元数据记录。`title` 和 `description` 从采集参数中提取，后续采集忽略（不更新）。`unit` 字段保留在 `data-record` 和 `period-stat` 表中。

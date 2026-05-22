@@ -34,6 +34,346 @@ npm i --save @kne/fastify-statistics
 - 业务指标实时监控与多周期报表
 - 多通道多属性的数据聚合与趋势查询
 
+### 使用方法
+
+#### 快速开始
+
+```js
+const fastify = require('fastify')();
+
+// 注册依赖插件
+fastify.register(require('@kne/fastify-sequelize'), { /* sequelize 配置 */ });
+fastify.register(require('@kne/fastify-cron'), { /* cron 配置 */ });
+
+// 注册统计插件
+fastify.register(require('@kne/fastify-statistics'), {
+  prefix: '/api/statistics',
+  cache: redisCacheInstance,   // 传入缓存实例启用缓冲模式
+  getAuthenticate: type => {
+    // type 为 'read' 或 'write'，返回认证信息
+  }
+});
+
+fastify.listen({ port: 3000 });
+```
+
+#### Channel 与 AttributeName 的设计理念
+
+**Channel（数据通道）** 是数据的第一级分类维度，采用冒号分隔的多级结构（`a:b:c`）。它的核心思想是：**从宏观到微观的层级划分**。
+
+- **一级 channel**（如 `sales`）是根通道，对应唯一的 `channel-meta` 记录（标题、描述）
+- **多级 channel**（如 `sales:beijing`、`sales:beijing:team-a`）是更细粒度的子通道
+- 查询时传入一级 channel 即可匹配所有子通道的数据
+- 同一根通道下的所有子通道共享同一个 `channel-meta`
+
+**AttributeName（属性名）** 是数据的第二级分类维度，用于在同一 channel 下区分不同的数据指标。
+
+- 默认值为 `default`，适用于单一指标的场景
+- 当 `data` 传入对象时自动展开为多属性（如 `{revenue: 10000, orders: 50}` 拆分为两条记录）
+
+#### 实际场景：企业部门数据统计
+
+假设一家公司要统计各部门的经营数据，我们可以这样设计 channel：
+
+```
+company                     ← 根通道：公司整体
+company:sales               ← 子通道：销售部
+company:sales:beijing       ← 子通道：销售部北京分部
+company:sales:shanghai      ← 子通道：销售部上海分部
+company:rd                  ← 子通道：研发部
+company:rd:frontend          ← 子通道：研发部前端组
+company:rd:backend           ← 子通道：研发部后端组
+company:hr                  ← 子通道：人力资源部
+```
+
+对应的 `channel-meta` 只需为根通道 `company` 创建一条记录：
+
+| channel | title | description |
+|---------|-------|-------------|
+| company | 公司经营数据 | 各部门经营数据统计 |
+
+**采集数据**：
+
+```js
+// 1. 销售部北京分部上报单指标（默认 attributeName=default）
+await fastify.statistics.services.collect({
+  channel: 'company:sales:beijing',
+  data: 58000,
+  unit: '元',
+  title: '公司',
+  description: '各部门经营数据统计'
+});
+
+// 2. 销售部上海分部上报多指标（自动展开为多条记录）
+await fastify.statistics.services.collect({
+  channel: 'company:sales:shanghai',
+  data: { revenue: 72000, orders: 150 },
+  unit: '元',
+  title: '公司',
+  description: '各部门经营数据统计'
+});
+
+// 3. 研发部前端组上报
+await fastify.statistics.services.collect({
+  channel: 'company:rd:frontend',
+  data: { tasks: 12, bugs: 3 },
+  title: '公司',
+  description: '各部门经营数据统计'
+});
+```
+
+采集后数据会自动展开并入库：
+
+| channel | attributeName | data | unit |
+|---------|--------------|------|------|
+| company | default | 58000 | 元 |
+| company:sales | default | 58000 | 元 |
+| company:sales:beijing | default | 58000 | 元 |
+| company | revenue | 72000 | 元 |
+| company | orders | 150 | 元 |
+| company:sales | revenue | 72000 | 元 |
+| company:sales | orders | 150 | 元 |
+| company:sales:shanghai | revenue | 72000 | 元 |
+| company:sales:shanghai | orders | 150 | 元 |
+| ... | ... | ... | ... |
+
+> 通道展开规则：`company:sales:beijing` 自动展开为 `company`、`company:sales`、`company:sales:beijing` 三条记录，确保每一级都能查到汇总数据。
+
+**查询数据**：
+
+```js
+// 1. 查询销售部所有分部的本月合计
+const salesResult = await fastify.statistics.services.query({
+  channel: 'company:sales',
+  startTime: '2026-05-01T00:00:00.000Z',
+  endTime: '2026-06-01T00:00:00.000Z',
+  period: 'm',
+  aggregates: ['sum']
+});
+
+// 2. 查询公司所有部门的本月合计（传入一级 channel 即可）
+const companyResult = await fastify.statistics.services.query({
+  channel: 'company',
+  startTime: '2026-05-01T00:00:00.000Z',
+  endTime: '2026-06-01T00:00:00.000Z',
+  period: 'm',
+  aggregates: ['sum']
+});
+
+// 3. 查询 revenue 和 orders 两个属性的合计与平均
+const revenueResult = await fastify.statistics.services.query({
+  channel: 'company',
+  startTime: '2026-05-01T00:00:00.000Z',
+  endTime: '2026-06-01T00:00:00.000Z',
+  attributeNames: ['revenue', 'orders'],
+  aggregates: ['sum', 'avg']
+});
+```
+
+**查询返回格式**：
+
+> **注意**：查询结果中 `aggregate` 不作为独立字段返回。聚合方法（如 sum、avg）被用作 `data` 对象的键名。`data` 字段始终为对象（按属性名映射），例如单聚合时 `data` 为 `{"default": 58000}`，多聚合时 `data` 为 `{"sum": {"default": 58000}, "avg": {"default": 29000}}`。
+
+查询销售部（`channel=company:sales`）返回：
+
+```json
+{
+  "channelMetas": {
+    "company": { "channel": "company", "title": "公司", "description": "各部门经营数据统计" }
+  },
+  "list": [
+    {
+      "channel": "company:sales:beijing",
+      "period": "m",
+      "time": "2026-05-01T00:00:00.000Z",
+      "data": { "default": 58000 },
+      "unit": { "default": "元" }
+    },
+    {
+      "channel": "company:sales:shanghai",
+      "period": "m",
+      "time": "2026-05-01T00:00:00.000Z",
+      "data": { "revenue": 72000, "orders": 150 },
+      "unit": { "revenue": "元", "orders": "元" }
+    }
+  ]
+}
+```
+
+查询整个公司（`channel=company`）返回：
+
+```json
+{
+  "channelMetas": {
+    "company": { "channel": "company", "title": "公司", "description": "各部门经营数据统计" }
+  },
+  "list": [
+    {
+      "channel": "company",
+      "period": "m",
+      "time": "2026-05-01T00:00:00.000Z",
+      "data": { "default": 130000, "revenue": 72000, "orders": 150, "tasks": 12, "bugs": 3 },
+      "unit": { "default": "元", "revenue": "元", "orders": "元", "tasks": "个", "bugs": "个" }
+    },
+    {
+      "channel": "company:sales",
+      "period": "m",
+      "time": "2026-05-01T00:00:00.000Z",
+      "data": { "default": 130000, "revenue": 72000, "orders": 150 },
+      "unit": { "default": "元", "revenue": "元", "orders": "元" }
+    },
+    {
+      "channel": "company:sales:beijing",
+      "period": "m",
+      "time": "2026-05-01T00:00:00.000Z",
+      "data": { "default": 58000 },
+      "unit": { "default": "元" }
+    },
+    {
+      "channel": "company:sales:shanghai",
+      "period": "m",
+      "time": "2026-05-01T00:00:00.000Z",
+      "data": { "revenue": 72000, "orders": 150 },
+      "unit": { "revenue": "元", "orders": "元" }
+    },
+    {
+      "channel": "company:rd",
+      "period": "m",
+      "time": "2026-05-01T00:00:00.000Z",
+      "data": { "tasks": 12, "bugs": 3 },
+      "unit": { "tasks": "个", "bugs": "个" }
+    },
+    {
+      "channel": "company:rd:frontend",
+      "period": "m",
+      "time": "2026-05-01T00:00:00.000Z",
+      "data": { "tasks": 12, "bugs": 3 },
+      "unit": { "tasks": "个", "bugs": "个" }
+    }
+  ]
+}
+```
+
+查询 revenue 和 orders 两个属性的合计与平均（`channel=company`, `attributeNames=['revenue','orders']`, `aggregates=['sum','avg']`）返回：
+
+```json
+{
+  "channelMetas": {
+    "company": { "channel": "company", "title": "公司", "description": "各部门经营数据统计" }
+  },
+  "list": [
+    {
+      "channel": "company",
+      "period": "m",
+      "time": "2026-05-01T00:00:00.000Z",
+      "data": { "sum": { "revenue": 72000, "orders": 150 }, "avg": { "revenue": 72000, "orders": 150 } },
+      "unit": { "revenue": "元", "orders": "元" }
+    },
+    {
+      "channel": "company:sales",
+      "period": "m",
+      "time": "2026-05-01T00:00:00.000Z",
+      "data": { "sum": { "revenue": 72000, "orders": 150 }, "avg": { "revenue": 72000, "orders": 150 } },
+      "unit": { "revenue": "元", "orders": "元" }
+    },
+    {
+      "channel": "company:sales:shanghai",
+      "period": "m",
+      "time": "2026-05-01T00:00:00.000Z",
+      "data": { "sum": { "revenue": 72000, "orders": 150 }, "avg": { "revenue": 72000, "orders": 150 } },
+      "unit": { "revenue": "元", "orders": "元" }
+    }
+  ]
+}
+```
+
+> `channelMetas` 按 root channel 去重，所有子通道共享同一份元数据，避免数据冗余。
+
+#### Channel Meta 管理
+
+通道元数据在首次采集时自动创建，也可通过服务接口管理：
+
+```js
+// 查询通道元数据
+const meta = await fastify.statistics.services.channelMeta.detail({
+  channel: 'company'
+});
+
+// 列出所有元数据
+const list = await fastify.statistics.services.channelMeta.list();
+
+// 按通道筛选
+const list = await fastify.statistics.services.channelMeta.list({
+  filter: { channel: 'company' }
+});
+
+// 修改元数据
+await fastify.statistics.services.channelMeta.save({
+  channel: 'company',
+  title: '企业经营数据总览',
+  description: '全公司各部门经营指标汇总'
+});
+```
+
+#### SSE 实时推送
+
+通过 HTTP 接口或程序化 API 获取实时统计数据推送：
+
+```js
+// HTTP 接口：GET /api/statistics/sse?channel=company&aggregates=sum&interval=5
+// 浏览器端使用 EventSource 接收
+const eventSource = new EventSource('/api/statistics/sse?channel=company&aggregates=sum&interval=5');
+eventSource.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  console.log(data); // { channel, period, time, data, unit }
+};
+
+// 程序化调用（在 Fastify 路由中）
+fastify.get('/my-sse', async (request, reply) => {
+  const sseContext = await fastify.statistics.services.sseStream.send(reply, {
+    name: 'my-sse-channel',
+    params: {
+      channel: 'company',
+      startTime: new Date(Date.now() - 3600000).toISOString(),
+      endTime: new Date().toISOString(),
+      aggregates: ['sum']
+    },
+    fetchData: async (params) => {
+      return fastify.statistics.services.query(params);
+    },
+    interval: 5,
+    heartbeatInterval: 30000,
+    maxDuration: 1800000
+  });
+
+  // 可手动关闭
+  // sseContext.close();
+
+  // 监听关闭事件
+  sseContext.onClose(() => {
+    console.log('SSE 连接已关闭');
+  });
+});
+```
+
+**SSE 事件类型**：
+
+| 事件 | 说明 |
+|------|------|
+| `data`（默认） | 正常数据推送，内容为查询结果 JSON |
+| `timeout` | 连接超过 maxDuration 后自动断开通知 |
+| `error` | fetchData 出错时的错误事件 |
+| 心跳（`: heartbeat`） | 保活注释行 |
+
+**SSE 上下文方法**：
+
+| 方法 | 说明 |
+|------|------|
+| `isConnected()` | 返回当前连接状态 |
+| `close()` | 手动关闭 SSE 连接 |
+| `onClose(callback)` | 注册连接关闭回调，若已断开则立即执行 |
+
+
 
 ### 示例
 
@@ -99,24 +439,32 @@ npm i --save @kne/fastify-statistics
 **返回格式**：
 
 ```json
-[
-  {
-    "channel": "sensor",
-    "period": "h",
-    "time": "2026-05-22T08:00:00.000Z",
-    "data": 100
-  }
-]
+{
+  "channelMetas": {
+    "sensor": { "channel": "sensor", "title": "传感器", "description": "" }
+  },
+  "list": [
+    {
+      "channel": "sensor",
+      "period": "h",
+      "time": "2026-05-22T08:00:00.000Z",
+      "data": { "default": 100 },
+      "unit": { "default": "℃" }
+    }
+  ]
+}
 ```
 
-`data` 字段格式根据查询条件动态决定：
+`data` 字段格式始终为对象（按属性名映射），根据聚合方法数量决定层级：
 
 | 条件 | data 格式 | 示例 |
 |------|-----------|------|
-| 单属性 + 单聚合 | number | `100` |
-| 单属性 + 多聚合 | object | `{"sum": 100, "avg": 50}` |
-| 多属性 + 单聚合 | object | `{"temperature": 25, "humidity": 60}` |
-| 多属性 + 多聚合 | 嵌套object | `{"sum": {"temperature": 25}, "avg": {"temperature": 12.5}}` |
+| 单聚合 | object | `{"default": 100}` 或 `{"temperature": 25, "humidity": 60}` |
+| 多聚合 | 嵌套object | `{"sum": {"default": 100}, "avg": {"default": 50}}` 或 `{"sum": {"temperature": 25}, "avg": {"temperature": 12.5}}` |
+
+`unit` 字段为对象，按属性名映射单位：`{"default": "℃"}` 或 `{"temperature": "℃", "humidity": "%"}`
+
+> **注意**：查询结果中 `aggregate` 不作为独立字段返回。聚合方法（如 sum、avg）被用作 `data` 对象的键名。例如多聚合时 `data` 为 `{"sum": {"default": 100}, "avg": {"default": 50}}`，而非 `[{aggregate: "sum", data: 100}, {aggregate: "avg", data: 50}]`。
 
 ### 统计周期
 
@@ -172,7 +520,7 @@ npm i --save @kne/fastify-statistics
 **响应格式**：`Content-Type: text/event-stream`
 
 ```
-data: {"channel":"sensor","period":"h","time":"...","data":100}
+data: {"channel":"sensor","period":"h","time":"...","data":{"default":100}}
 
 event: timeout
 data: {"message":"连接已超过30分钟，自动断开"}
@@ -218,12 +566,12 @@ data: {"message":"错误信息"}
 | 属性名 | 类型 | 说明 |
 |--------|------|------|
 | channel | STRING | 数据通道(必填) |
-| title | STRING | 标题(必填) |
-| description | TEXT | 描述 |
 | attributeName | STRING | 属性名(默认 default) |
 | data | DECIMAL(16,2) | 数据值(必填) |
-| unit | STRING | 数据单位 |
 | time | DATE | 采集时间(必填) |
+| unit | STRING | 数据单位 |
+
+> `title`、`description` 已移至 `channel-meta` 表，按 root channel 关联。
 
 #### period-stat（周期统计）
 
@@ -232,11 +580,23 @@ data: {"message":"错误信息"}
 | period | STRING | 统计周期(必填) |
 | time | DATE | 统计时间(必填) |
 | channel | STRING | 数据通道(必填) |
-| title | STRING | 标题(必填) |
-| description | TEXT | 描述 |
 | attributeName | STRING | 属性名(默认 default) |
 | aggregate | ENUM | 聚合方法(必填): sum/avg/count/min/max |
 | data | DECIMAL(16,2) | 统计数据值(必填) |
 | unit | STRING | 数据单位 |
 
+> `title`、`description` 已移至 `channel-meta` 表，按 root channel 关联。
+
 **唯一约束**：`(period, channel, attributeName, aggregate, time)`
+
+#### channel-meta（通道元数据）
+
+| 属性名 | 类型 | 说明 |
+|--------|------|------|
+| channel | STRING | 数据通道(唯一键) |
+| title | STRING | 标题(必填) |
+| description | TEXT | 描述 |
+
+**唯一约束**：`channel`
+
+**说明**：`channel-meta` 按 root channel（一级通道）唯一存储，一条元数据被所有以该 root channel 为前缀的子通道共享。首次采集某通道数据时，自动以其 root channel 创建元数据记录。`title` 和 `description` 从采集参数中提取，后续采集忽略（不更新）。`unit` 字段保留在 `data-record` 和 `period-stat` 表中。

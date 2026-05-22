@@ -16,15 +16,6 @@ module.exports = ({ DataTypes, options }) => {
         allowNull: false,
         comment: '数据通道'
       },
-      title: {
-        type: DataTypes.STRING,
-        allowNull: false,
-        comment: '标题'
-      },
-      description: {
-        type: DataTypes.TEXT,
-        comment: '描述'
-      },
       attributeName: {
         type: DataTypes.STRING,
         comment: '属性名',
@@ -46,7 +37,11 @@ module.exports = ({ DataTypes, options }) => {
         comment: '数据单位'
       }
     },
-    associate: ({}, fastify) => {},
+    associate: ({ periodStat, channelMeta }) => {
+      periodStat.belongsTo(channelMeta, {
+        comment: '通道meta数据'
+      });
+    },
     options: {
       comment: '周期统计',
       indexes: [{ unique: true, fields: ['period', 'channel', 'attributeName', 'aggregate', 'time'] }, { fields: ['channel', 'attributeName', 'time'] }, { fields: ['period', 'time'] }, { fields: ['attributeName'] }]

@@ -75,9 +75,6 @@ describe('@kne/fastify-statistics', function () {
         findAllResults.push({
           channel: 'temperature',
           attributeName: 'value',
-          title: '温度',
-          unit: '℃',
-          description: 'test',
           sum: 100,
           avg: 25,
           count: 4,
@@ -90,7 +87,7 @@ describe('@kne/fastify-statistics', function () {
         expect(records.length).to.equal(5);
         expect(bulkCreateCalls.length).to.equal(1);
         expect(bulkCreateCalls[0].records.length).to.equal(5);
-        expect(bulkCreateCalls[0].opts.updateOnDuplicate).to.deep.equal(['data', 'title', 'unit', 'description']);
+        expect(bulkCreateCalls[0].opts.updateOnDuplicate).to.deep.equal(['data', 'unit']);
 
         const aggregates = records.map(r => r.aggregate);
         expect(aggregates).to.have.members(['sum', 'avg', 'count', 'min', 'max']);
@@ -100,6 +97,9 @@ describe('@kne/fastify-statistics', function () {
         expect(sumRecord.channel).to.equal('temperature');
         expect(sumRecord.attributeName).to.equal('value');
         expect(sumRecord.data).to.equal(100);
+        expect(sumRecord.title).to.be.undefined;
+        expect(sumRecord.description).to.be.undefined;
+        expect(sumRecord.unit).to.be.undefined;
 
         await fastify.close();
       });
@@ -112,7 +112,7 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-01T01:00:00.000Z');
 
         findAllResults.push({
-          channel: 'ch1', attributeName: 'val', title: 'test', unit: null, description: null,
+          channel: 'ch1', attributeName: 'val',
           sum: 10, avg: null, count: null, min: null, max: null
         });
 
@@ -146,7 +146,7 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-01T01:00:00.000Z');
 
         findAllResults.push({
-          channel: 'ch1', attributeName: 'val', title: 'test', unit: null, description: null,
+          channel: 'ch1', attributeName: 'val',
           sum: 100, avg: null, count: 5, min: null, max: 50
         });
 
@@ -169,14 +169,14 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-02T00:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'temperature', attributeName: 'value', title: '温度', unit: '℃', description: null, aggregate: 'sum', data: 30, time: new Date('2026-05-01T00:00:00.000Z') },
-          { period: 'h', channel: 'temperature', attributeName: 'value', title: '温度', unit: '℃', description: null, aggregate: 'sum', data: 20, time: new Date('2026-05-01T01:00:00.000Z') },
-          { period: 'h', channel: 'temperature', attributeName: 'value', title: '温度', unit: '℃', description: null, aggregate: 'count', data: 3, time: new Date('2026-05-01T00:00:00.000Z') },
-          { period: 'h', channel: 'temperature', attributeName: 'value', title: '温度', unit: '℃', description: null, aggregate: 'count', data: 2, time: new Date('2026-05-01T01:00:00.000Z') },
-          { period: 'h', channel: 'temperature', attributeName: 'value', title: '温度', unit: '℃', description: null, aggregate: 'min', data: 8, time: new Date('2026-05-01T00:00:00.000Z') },
-          { period: 'h', channel: 'temperature', attributeName: 'value', title: '温度', unit: '℃', description: null, aggregate: 'min', data: 12, time: new Date('2026-05-01T01:00:00.000Z') },
-          { period: 'h', channel: 'temperature', attributeName: 'value', title: '温度', unit: '℃', description: null, aggregate: 'max', data: 22, time: new Date('2026-05-01T00:00:00.000Z') },
-          { period: 'h', channel: 'temperature', attributeName: 'value', title: '温度', unit: '℃', description: null, aggregate: 'max', data: 28, time: new Date('2026-05-01T01:00:00.000Z') }
+          { period: 'h', channel: 'temperature', attributeName: 'value', aggregate: 'sum', data: 30, time: new Date('2026-05-01T00:00:00.000Z') },
+          { period: 'h', channel: 'temperature', attributeName: 'value', aggregate: 'sum', data: 20, time: new Date('2026-05-01T01:00:00.000Z') },
+          { period: 'h', channel: 'temperature', attributeName: 'value', aggregate: 'count', data: 3, time: new Date('2026-05-01T00:00:00.000Z') },
+          { period: 'h', channel: 'temperature', attributeName: 'value', aggregate: 'count', data: 2, time: new Date('2026-05-01T01:00:00.000Z') },
+          { period: 'h', channel: 'temperature', attributeName: 'value', aggregate: 'min', data: 8, time: new Date('2026-05-01T00:00:00.000Z') },
+          { period: 'h', channel: 'temperature', attributeName: 'value', aggregate: 'min', data: 12, time: new Date('2026-05-01T01:00:00.000Z') },
+          { period: 'h', channel: 'temperature', attributeName: 'value', aggregate: 'max', data: 22, time: new Date('2026-05-01T00:00:00.000Z') },
+          { period: 'h', channel: 'temperature', attributeName: 'value', aggregate: 'max', data: 28, time: new Date('2026-05-01T01:00:00.000Z') }
         );
 
         const records = await fastify.statistics.services.periodStat.aggregate('d', { startTime, endTime });
@@ -202,7 +202,7 @@ describe('@kne/fastify-statistics', function () {
 
         // Verify bulkCreate used updateOnDuplicate for idempotency
         expect(bulkCreateCalls.length).to.equal(1);
-        expect(bulkCreateCalls[0].opts.updateOnDuplicate).to.deep.equal(['data', 'title', 'unit', 'description']);
+        expect(bulkCreateCalls[0].opts.updateOnDuplicate).to.deep.equal(['data', 'unit']);
 
         await fastify.close();
       });
@@ -215,8 +215,8 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-02T00:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'temperature', attributeName: 'value', title: '温度', unit: '℃', description: null, aggregate: 'sum', data: 50, time: startTime },
-          { period: 'h', channel: 'humidity', attributeName: 'value', title: '湿度', unit: '%', description: null, aggregate: 'sum', data: 200, time: startTime }
+          { period: 'h', channel: 'temperature', attributeName: 'value', aggregate: 'sum', data: 50, time: startTime },
+          { period: 'h', channel: 'humidity', attributeName: 'value', aggregate: 'sum', data: 200, time: startTime }
         );
 
         const records = await fastify.statistics.services.periodStat.aggregate('d', { startTime, endTime });
@@ -235,8 +235,8 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-02T00:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'ch1', attributeName: 'val', title: 'test', unit: null, description: null, aggregate: 'sum', data: 120, time: startTime },
-          { period: 'h', channel: 'ch1', attributeName: 'val', title: 'test', unit: null, description: null, aggregate: 'count', data: 3, time: startTime }
+          { period: 'h', channel: 'ch1', attributeName: 'val', aggregate: 'sum', data: 120, time: startTime },
+          { period: 'h', channel: 'ch1', attributeName: 'val', aggregate: 'count', data: 3, time: startTime }
         );
 
         const records = await fastify.statistics.services.periodStat.aggregate('d', { startTime, endTime });
@@ -270,8 +270,8 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-02T00:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'd', channel: 'temperature', attributeName: 'high', title: '最高温', unit: '℃', description: null, aggregate: 'sum', data: 50, time: startTime },
-          { period: 'd', channel: 'temperature', attributeName: 'low', title: '最低温', unit: '℃', description: null, aggregate: 'sum', data: 30, time: startTime }
+          { period: 'd', channel: 'temperature', attributeName: 'high', aggregate: 'sum', data: 50, time: startTime },
+          { period: 'd', channel: 'temperature', attributeName: 'low', aggregate: 'sum', data: 30, time: startTime }
         );
 
         const records = await fastify.statistics.services.periodStat.aggregate('m', { startTime, endTime });
@@ -293,7 +293,7 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-02T00:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'ch1', attributeName: null, title: 'test', unit: null, description: null, aggregate: 'sum', data: 50, time: startTime }
+          { period: 'h', channel: 'ch1', attributeName: null, aggregate: 'sum', data: 50, time: startTime }
         );
 
         const records = await fastify.statistics.services.periodStat.aggregate('d', { startTime, endTime });
@@ -311,9 +311,9 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-02T00:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'ch1', attributeName: 'val', title: 'test', unit: null, description: null, aggregate: 'count', data: 5, time: startTime },
-          { period: 'h', channel: 'ch1', attributeName: 'val', title: 'test', unit: null, description: null, aggregate: 'min', data: 1, time: startTime },
-          { period: 'h', channel: 'ch1', attributeName: 'val', title: 'test', unit: null, description: null, aggregate: 'max', data: 10, time: startTime }
+          { period: 'h', channel: 'ch1', attributeName: 'val', aggregate: 'count', data: 5, time: startTime },
+          { period: 'h', channel: 'ch1', attributeName: 'val', aggregate: 'min', data: 1, time: startTime },
+          { period: 'h', channel: 'ch1', attributeName: 'val', aggregate: 'max', data: 10, time: startTime }
         );
 
         const records = await fastify.statistics.services.periodStat.aggregate('d', { startTime, endTime });
@@ -373,6 +373,7 @@ describe('@kne/fastify-statistics', function () {
         const periodStatRows = [];
         const dataRecordFindAllResult = [];
         const findAllCalls = [];
+        const channelMetaRows = [];
 
         const mockTransaction = {
           commit: async () => {},
@@ -397,6 +398,14 @@ describe('@kne/fastify-statistics', function () {
               }
               return periodStatRows.filter(row => !period || row.period === period);
             }
+          },
+          channelMeta: {
+            findAll: async ({ where }) => {
+              if (where && where.channel && where.channel.in) {
+                return channelMetaRows.filter(row => where.channel.in.includes(row.channel));
+              }
+              return channelMetaRows;
+            }
           }
         };
 
@@ -416,10 +425,10 @@ describe('@kne/fastify-statistics', function () {
           services: {}
         });
 
-        return { fastify, periodStatRows, dataRecordFindAllResult, findAllCalls };
+        return { fastify, periodStatRows, dataRecordFindAllResult, findAllCalls, channelMetaRows };
       };
 
-      it('should return direct value when single aggregate and single default attribute with no filter', async () => {
+      it('should return attribute-keyed object when single aggregate and single default attribute with no filter', async () => {
         const { fastify, periodStatRows } = createQueryMockFastify();
         await mockPeriodStatService(fastify, { name: 'statistics' });
 
@@ -428,17 +437,17 @@ describe('@kne/fastify-statistics', function () {
 
         periodStatRows.push({
           period: 'h', channel: 'sensor', attributeName: 'default',
-          title: '传感器', aggregate: 'sum', data: 100, time: startTime
+          aggregate: 'sum', data: 100, time: startTime
         });
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           channel: 'sensor', startTime, endTime, aggregates: ['sum']
         });
 
         expect(results.length).to.equal(1);
         expect(results[0].channel).to.equal('sensor');
         expect(results[0].period).to.equal('h');
-        expect(results[0].data).to.equal(100);
+        expect(results[0].data).to.deep.equal({ default: 100 });
 
         await fastify.close();
       });
@@ -451,11 +460,11 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-01T01:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'sensor', attributeName: 'temperature', title: '温度', aggregate: 'sum', data: 100, time: startTime },
-          { period: 'h', channel: 'sensor', attributeName: 'humidity', title: '湿度', aggregate: 'sum', data: 200, time: startTime }
+          { period: 'h', channel: 'sensor', attributeName: 'temperature', aggregate: 'sum', data: 100, time: startTime },
+          { period: 'h', channel: 'sensor', attributeName: 'humidity', aggregate: 'sum', data: 200, time: startTime }
         );
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           channel: 'sensor', startTime, endTime, aggregates: ['sum']
         });
 
@@ -465,7 +474,7 @@ describe('@kne/fastify-statistics', function () {
         await fastify.close();
       });
 
-      it('should return aggregate-keyed object when multiple aggregates and single default attribute', async () => {
+      it('should return nested object when multiple aggregates and single default attribute', async () => {
         const { fastify, periodStatRows } = createQueryMockFastify();
         await mockPeriodStatService(fastify, { name: 'statistics' });
 
@@ -473,16 +482,16 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-01T01:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'sensor', attributeName: 'default', title: '传感器', aggregate: 'sum', data: 100, time: startTime },
-          { period: 'h', channel: 'sensor', attributeName: 'default', title: '传感器', aggregate: 'avg', data: 25, time: startTime }
+          { period: 'h', channel: 'sensor', attributeName: 'default', aggregate: 'sum', data: 100, time: startTime },
+          { period: 'h', channel: 'sensor', attributeName: 'default', aggregate: 'avg', data: 25, time: startTime }
         );
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           channel: 'sensor', startTime, endTime, aggregates: ['sum', 'avg']
         });
 
         expect(results.length).to.equal(1);
-        expect(results[0].data).to.deep.equal({ sum: 100, avg: 25 });
+        expect(results[0].data).to.deep.equal({ sum: { default: 100 }, avg: { default: 25 } });
 
         await fastify.close();
       });
@@ -495,13 +504,13 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-01T01:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'sensor', attributeName: 'temperature', title: '温度', aggregate: 'sum', data: 100, time: startTime },
-          { period: 'h', channel: 'sensor', attributeName: 'humidity', title: '湿度', aggregate: 'sum', data: 200, time: startTime },
-          { period: 'h', channel: 'sensor', attributeName: 'temperature', title: '温度', aggregate: 'avg', data: 25, time: startTime },
-          { period: 'h', channel: 'sensor', attributeName: 'humidity', title: '湿度', aggregate: 'avg', data: 50, time: startTime }
+          { period: 'h', channel: 'sensor', attributeName: 'temperature', aggregate: 'sum', data: 100, time: startTime },
+          { period: 'h', channel: 'sensor', attributeName: 'humidity', aggregate: 'sum', data: 200, time: startTime },
+          { period: 'h', channel: 'sensor', attributeName: 'temperature', aggregate: 'avg', data: 25, time: startTime },
+          { period: 'h', channel: 'sensor', attributeName: 'humidity', aggregate: 'avg', data: 50, time: startTime }
         );
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           channel: 'sensor', startTime, endTime, aggregates: ['sum', 'avg']
         });
 
@@ -522,10 +531,10 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-01T01:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'sensor', attributeName: 'default', title: '传感器', aggregate: 'sum', data: 100, time: startTime }
+          { period: 'h', channel: 'sensor', attributeName: 'default', aggregate: 'sum', data: 100, time: startTime }
         );
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           channel: 'sensor', startTime, endTime, attributeNames: ['default'], aggregates: ['sum']
         });
 
@@ -535,19 +544,20 @@ describe('@kne/fastify-statistics', function () {
       });
 
       it('should query all child channels', async () => {
-        const { fastify, periodStatRows } = createQueryMockFastify();
+        const { fastify, periodStatRows, channelMetaRows } = createQueryMockFastify();
         await mockPeriodStatService(fastify, { name: 'statistics' });
 
         const startTime = new Date('2026-05-01T00:00:00.000Z');
         const endTime = new Date('2026-05-01T01:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'sensor', attributeName: 'default', title: '传感器', aggregate: 'sum', data: 100, time: startTime },
-          { period: 'h', channel: 'sensor:room1', attributeName: 'default', title: '房间1', aggregate: 'sum', data: 50, time: startTime },
-          { period: 'h', channel: 'sensor:room2', attributeName: 'default', title: '房间2', aggregate: 'sum', data: 30, time: startTime }
+          { period: 'h', channel: 'sensor', attributeName: 'default', aggregate: 'sum', data: 100, time: startTime },
+          { period: 'h', channel: 'sensor:room1', attributeName: 'default', aggregate: 'sum', data: 50, time: startTime },
+          { period: 'h', channel: 'sensor:room2', attributeName: 'default', aggregate: 'sum', data: 30, time: startTime }
         );
+        channelMetaRows.push({ channel: 'sensor', title: '传感器', description: '温度' });
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           channel: 'sensor', startTime, endTime, aggregates: ['sum']
         });
 
@@ -556,6 +566,10 @@ describe('@kne/fastify-statistics', function () {
         expect(channels).to.include('sensor');
         expect(channels).to.include('sensor:room1');
         expect(channels).to.include('sensor:room2');
+
+        expect(channelMetas).to.have.property('sensor');
+        expect(channelMetas.sensor.title).to.equal('传感器');
+        expect(Object.keys(channelMetas).length).to.equal(1);
 
         await fastify.close();
       });
@@ -568,11 +582,11 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-01T01:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'sensor', attributeName: 'default', title: '传感器', aggregate: 'sum', data: 10, time: startTime },
-          { period: 'd', channel: 'sensor', attributeName: 'default', title: '传感器', aggregate: 'sum', data: 240, time: startTime }
+          { period: 'h', channel: 'sensor', attributeName: 'default', aggregate: 'sum', data: 10, time: startTime },
+          { period: 'd', channel: 'sensor', attributeName: 'default', aggregate: 'sum', data: 240, time: startTime }
         );
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           channel: 'sensor', startTime, endTime, aggregates: ['sum']
         });
 
@@ -594,11 +608,12 @@ describe('@kne/fastify-statistics', function () {
         const startTime = new Date('2026-05-01T00:00:00.000Z');
         const endTime = new Date('2026-05-01T01:00:00.000Z');
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           channel: 'nonexistent', startTime, endTime, aggregates: ['sum']
         });
 
         expect(results).to.deep.equal([]);
+        expect(channelMetas).to.deep.equal({});
 
         await fastify.close();
       });
@@ -611,10 +626,10 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-01T01:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'sensor', attributeName: 'temperature', title: '温度', aggregate: 'sum', data: 100, time: startTime }
+          { period: 'h', channel: 'sensor', attributeName: 'temperature', aggregate: 'sum', data: 100, time: startTime }
         );
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           channel: 'sensor', startTime, endTime, attributeNames: ['temperature'], aggregates: ['sum']
         });
 
@@ -634,11 +649,10 @@ describe('@kne/fastify-statistics', function () {
 
         dataRecordFindAllResult.push({
           channel: 'sensor', attributeName: 'temperature',
-          title: '温度', unit: '℃',
           sum: 50, avg: 25, count: 2, min: 10, max: 40
         });
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           channel: 'sensor', startTime, endTime, aggregates: ['sum']
         });
 
@@ -661,19 +675,19 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-01T01:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'sensor', attributeName: 'default', title: '传感器', aggregate: 'sum', data: 100, time: startTime },
-          { period: 'h', channel: 'sensor', attributeName: 'default', title: '传感器', aggregate: 'avg', data: 25, time: startTime },
-          { period: 'h', channel: 'sensor', attributeName: 'default', title: '传感器', aggregate: 'count', data: 4, time: startTime },
-          { period: 'h', channel: 'sensor', attributeName: 'default', title: '传感器', aggregate: 'min', data: 10, time: startTime },
-          { period: 'h', channel: 'sensor', attributeName: 'default', title: '传感器', aggregate: 'max', data: 40, time: startTime }
+          { period: 'h', channel: 'sensor', attributeName: 'default', aggregate: 'sum', data: 100, time: startTime },
+          { period: 'h', channel: 'sensor', attributeName: 'default', aggregate: 'avg', data: 25, time: startTime },
+          { period: 'h', channel: 'sensor', attributeName: 'default', aggregate: 'count', data: 4, time: startTime },
+          { period: 'h', channel: 'sensor', attributeName: 'default', aggregate: 'min', data: 10, time: startTime },
+          { period: 'h', channel: 'sensor', attributeName: 'default', aggregate: 'max', data: 40, time: startTime }
         );
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           channel: 'sensor', startTime, endTime
         });
 
         expect(results.length).to.equal(1);
-        expect(results[0].data).to.deep.equal({ sum: 100, avg: 25, count: 4, min: 10, max: 40 });
+        expect(results[0].data).to.deep.equal({ sum: { default: 100 }, avg: { default: 25 }, count: { default: 4 }, min: { default: 10 }, max: { default: 40 } });
 
         await fastify.close();
       });
@@ -690,18 +704,18 @@ describe('@kne/fastify-statistics', function () {
         const time1 = new Date('2026-05-01T01:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'sensor', attributeName: 'default', title: '传感器', aggregate: 'sum', data: 30, time: time2 },
-          { period: 'h', channel: 'sensor', attributeName: 'default', title: '传感器', aggregate: 'sum', data: 10, time: time0 },
-          { period: 'h', channel: 'sensor', attributeName: 'default', title: '传感器', aggregate: 'sum', data: 20, time: time1 }
+          { period: 'h', channel: 'sensor', attributeName: 'default', aggregate: 'sum', data: 30, time: time2 },
+          { period: 'h', channel: 'sensor', attributeName: 'default', aggregate: 'sum', data: 10, time: time0 },
+          { period: 'h', channel: 'sensor', attributeName: 'default', aggregate: 'sum', data: 20, time: time1 }
         );
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           channel: 'sensor', startTime, endTime, aggregates: ['sum']
         });
 
-        expect(results[0].data).to.equal(10);
-        expect(results[1].data).to.equal(20);
-        expect(results[2].data).to.equal(30);
+        expect(results[0].data).to.deep.equal({ default: 10 });
+        expect(results[1].data).to.deep.equal({ default: 20 });
+        expect(results[2].data).to.deep.equal({ default: 30 });
 
         await fastify.close();
       });
@@ -716,7 +730,6 @@ describe('@kne/fastify-statistics', function () {
 
         dataRecordFindAllResult.push({
           channel: 'sensor', attributeName: 'temperature',
-          title: '温度', unit: '℃',
           sum: 50, avg: null, count: null, min: null, max: null
         });
 
@@ -744,7 +757,6 @@ describe('@kne/fastify-statistics', function () {
 
         dataRecordFindAllResult.push({
           channel: 'sensor', attributeName: 'default',
-          title: '传感器', unit: null,
           sum: 100, avg: null, count: null, min: null, max: null
         });
 
@@ -777,23 +789,30 @@ describe('@kne/fastify-statistics', function () {
         await fastify.close();
       });
 
-      it('should query without channel filter', async () => {
-        const { fastify, periodStatRows } = createQueryMockFastify();
+      it('should query without channel filter and return channelMetas', async () => {
+        const { fastify, periodStatRows, channelMetaRows } = createQueryMockFastify();
         await mockPeriodStatService(fastify, { name: 'statistics' });
 
         const startTime = new Date('2026-05-01T00:00:00.000Z');
         const endTime = new Date('2026-05-01T01:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'sensor1', attributeName: 'default', title: '传感器1', aggregate: 'sum', data: 100, time: startTime },
-          { period: 'h', channel: 'sensor2', attributeName: 'default', title: '传感器2', aggregate: 'sum', data: 200, time: startTime }
+          { period: 'h', channel: 'sensor1', attributeName: 'default', aggregate: 'sum', data: 100, time: startTime },
+          { period: 'h', channel: 'sensor2', attributeName: 'default', aggregate: 'sum', data: 200, time: startTime }
+        );
+        channelMetaRows.push(
+          { channel: 'sensor1', title: '传感器1', description: null },
+          { channel: 'sensor2', title: '传感器2', description: '温度' }
         );
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           startTime, endTime, aggregates: ['sum']
         });
 
         expect(results.length).to.equal(2);
+        expect(Object.keys(channelMetas).length).to.equal(2);
+        expect(channelMetas.sensor1.title).to.equal('传感器1');
+        expect(channelMetas.sensor2.title).to.equal('传感器2');
 
         await fastify.close();
       });
@@ -806,15 +825,15 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-01T01:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'sensor', attributeName: null, title: '传感器', aggregate: 'sum', data: 100, time: startTime }
+          { period: 'h', channel: 'sensor', attributeName: null, aggregate: 'sum', data: 100, time: startTime }
         );
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           channel: 'sensor', startTime, endTime, aggregates: ['sum']
         });
 
         expect(results.length).to.equal(1);
-        expect(results[0].data).to.equal(100);
+        expect(results[0].data).to.deep.equal({ default: 100 });
 
         await fastify.close();
       });
@@ -827,10 +846,10 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-01T01:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'sensor', attributeName: null, title: '传感器', aggregate: 'sum', data: 100, time: startTime }
+          { period: 'h', channel: 'sensor', attributeName: null, aggregate: 'sum', data: 100, time: startTime }
         );
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           channel: 'sensor', startTime, endTime, attributeNames: ['value'], aggregates: ['sum']
         });
 
@@ -848,11 +867,11 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-01T01:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'sensor', attributeName: null, title: '传感器', aggregate: 'sum', data: 100, time: startTime },
-          { period: 'h', channel: 'sensor', attributeName: null, title: '传感器', aggregate: 'avg', data: 25, time: startTime }
+          { period: 'h', channel: 'sensor', attributeName: null, aggregate: 'sum', data: 100, time: startTime },
+          { period: 'h', channel: 'sensor', attributeName: null, aggregate: 'avg', data: 25, time: startTime }
         );
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           channel: 'sensor', startTime, endTime, attributeNames: ['value'], aggregates: ['sum', 'avg']
         });
 
@@ -875,17 +894,15 @@ describe('@kne/fastify-statistics', function () {
 
         dataRecordFindAllResult.push({
           channel: 'sensor', attributeName: 'temperature',
-          title: '温度', unit: '℃',
           sum: 50, avg: undefined, count: undefined, min: undefined, max: undefined
         });
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           channel: 'sensor', startTime, endTime, aggregates: ['sum', 'avg']
         });
 
         const hourResult = results.find(r => r.period === 'h');
         if (hourResult) {
-          // sum=50 is the only non-null/undefined aggregate, formatted as { attributeName: value }
           expect(hourResult.data).to.deep.equal({ temperature: 50 });
         }
 
@@ -904,11 +921,10 @@ describe('@kne/fastify-statistics', function () {
 
         dataRecordFindAllResult.push({
           channel: 'sensor', attributeName: 'default',
-          title: '传感器', unit: null,
           sum: 100, avg: null, count: null, min: null, max: null
         });
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           channel: 'sensor', startTime, endTime, aggregates: ['sum']
         });
 
@@ -927,11 +943,10 @@ describe('@kne/fastify-statistics', function () {
 
         dataRecordFindAllResult.push({
           channel: 'sensor', attributeName: null,
-          title: '传感器', unit: '℃',
           sum: 100, avg: null, count: null, min: null, max: null
         });
 
-        const results = await fastify.statistics.services.periodStat.query({
+        const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
           channel: 'sensor', startTime, endTime, aggregates: ['sum']
         });
 
@@ -962,7 +977,7 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-01T01:00:00.000Z');
 
         findAllResults.push({
-          channel: 'ch1', attributeName: 'val', title: 'test', unit: null, description: null,
+          channel: 'ch1', attributeName: 'val',
           sum: 10, avg: null, count: null, min: null, max: null
         });
 
@@ -996,7 +1011,7 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-02T00:00:00.000Z');
 
         periodStatRows.push(
-          { period: 'h', channel: 'ch1', attributeName: 'val', title: 'test', unit: null, description: null, aggregate: 'sum', data: 10, time: startTime }
+          { period: 'h', channel: 'ch1', attributeName: 'val', aggregate: 'sum', data: 10, time: startTime }
         );
 
         try {
@@ -1017,7 +1032,7 @@ describe('@kne/fastify-statistics', function () {
         await mockPeriodStatService(fastify, { name: 'statistics' });
 
         findAllResults.push({
-          channel: 'ch1', attributeName: 'val', title: 'test', unit: null, description: null,
+          channel: 'ch1', attributeName: 'val',
           sum: 10, avg: null, count: null, min: null, max: null
         });
 
@@ -1038,13 +1053,13 @@ describe('@kne/fastify-statistics', function () {
 
           if (period === 'h') {
             findAllResults.push({
-              channel: 'ch1', attributeName: 'val', title: 'test', unit: null, description: null,
+              channel: 'ch1', attributeName: 'val',
               sum: 10, avg: null, count: null, min: null, max: null
             });
           } else {
             periodStatRows.push(
               { period: period === 'd' ? 'h' : period === 'w' || period === 'm' ? 'd' : period === 'q' ? 'm' : 'q',
-                channel: 'ch1', attributeName: 'val', title: 'test', unit: null, description: null,
+                channel: 'ch1', attributeName: 'val',
                 aggregate: 'sum', data: 10, time: new Date() }
             );
           }
@@ -1080,8 +1095,6 @@ describe('@kne/fastify-statistics', function () {
         await mockPeriodStatService(fastify, { name: 'statistics' });
 
         // Now manually trigger onTick with a failing aggregate
-        // The aggregate will fail because mock findAll returns empty results but we need it to throw
-        // Let's override the model to throw
         fastify.statistics.models.dataRecord.findAll = async () => {
           throw new Error('Cron aggregate error');
         };
