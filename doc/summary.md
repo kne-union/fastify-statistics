@@ -128,27 +128,34 @@ await fastify.statistics.services.collect({
 **查询数据**：
 
 ```js
-// 1. 查询销售部所有分部的本月合计
+// 1. 查询销售部本月合计（仅自身）
 const salesResult = await fastify.statistics.services.query({
-  channel: 'company:sales',
+  channels: ['company:sales'],
   startTime: '2026-05-01T00:00:00.000Z',
   endTime: '2026-06-01T00:00:00.000Z',
-  period: 'm',
   aggregates: ['sum']
 });
 
-// 2. 查询公司所有部门的本月合计（传入一级 channel 即可）
+// 2. 查询公司所有部门的本月合计（传入一级 channel + includeChildren）
 const companyResult = await fastify.statistics.services.query({
-  channel: 'company',
+  channels: ['company'],
   startTime: '2026-05-01T00:00:00.000Z',
   endTime: '2026-06-01T00:00:00.000Z',
-  period: 'm',
+  aggregates: ['sum'],
+  includeChildren: true
+});
+
+// 3. 同时查询多个通道（仅自身）
+const multiResult = await fastify.statistics.services.query({
+  channels: ['company:sales', 'company:rd'],
+  startTime: '2026-05-01T00:00:00.000Z',
+  endTime: '2026-06-01T00:00:00.000Z',
   aggregates: ['sum']
 });
 
-// 3. 查询 revenue 和 orders 两个属性的合计与平均
+// 4. 查询 revenue 和 orders 两个属性的合计与平均
 const revenueResult = await fastify.statistics.services.query({
-  channel: 'company',
+  channels: ['company'],
   startTime: '2026-05-01T00:00:00.000Z',
   endTime: '2026-06-01T00:00:00.000Z',
   attributeNames: ['revenue', 'orders'],
@@ -158,9 +165,9 @@ const revenueResult = await fastify.statistics.services.query({
 
 **查询返回格式**：
 
-> **注意**：查询结果中 `aggregate` 不作为独立字段返回。聚合方法（如 sum、avg）被用作 `data` 对象的键名。`data` 字段始终为对象（按属性名映射），例如单聚合时 `data` 为 `{"default": 58000}`，多聚合时 `data` 为 `{"sum": {"default": 58000}, "avg": {"default": 29000}}`。
+> **注意**：默认（`includeChildren=false`）只返回精确匹配通道的扁平列表。`includeChildren=true` 时按通道构建树形结构，子通道数据嵌套在 `children` 数组中。`data` 字段始终为对象（按属性名映射），例如单聚合时 `data` 为 `{"default": 58000}`，多聚合时 `data` 为 `{"sum": {"default": 58000}, "avg": {"default": 29000}}`。
 
-查询销售部（`channel=company:sales`）返回：
+查询销售部（`channels=['company:sales']`，默认不包含子通道）返回：
 
 ```json
 {
@@ -169,24 +176,17 @@ const revenueResult = await fastify.statistics.services.query({
   },
   "list": [
     {
-      "channel": "company:sales:beijing",
+      "channel": "company:sales",
       "period": "m",
       "time": "2026-05-01T00:00:00.000Z",
-      "data": { "default": 58000 },
-      "unit": { "default": "元" }
-    },
-    {
-      "channel": "company:sales:shanghai",
-      "period": "m",
-      "time": "2026-05-01T00:00:00.000Z",
-      "data": { "revenue": 72000, "orders": 150 },
-      "unit": { "revenue": "元", "orders": "元" }
+      "data": { "default": 130000, "revenue": 72000, "orders": 150 },
+      "unit": { "default": "元", "revenue": "元", "orders": "元" }
     }
   ]
 }
 ```
 
-查询整个公司（`channel=company`）返回：
+查询整个公司（`channels=['company'], includeChildren=true`）返回：
 
 ```json
 {
@@ -196,11 +196,88 @@ const revenueResult = await fastify.statistics.services.query({
   "list": [
     {
       "channel": "company",
-      "period": "m",
-      "time": "2026-05-01T00:00:00.000Z",
-      "data": { "default": 130000, "revenue": 72000, "orders": 150, "tasks": 12, "bugs": 3 },
-      "unit": { "default": "元", "revenue": "元", "orders": "元", "tasks": "个", "bugs": "个" }
-    },
+      "items": [
+        {
+          "period": "m",
+          "time": "2026-05-01T00:00:00.000Z",
+          "data": { "default": 130000, "revenue": 72000, "orders": 150, "tasks": 12, "bugs": 3 },
+          "unit": { "default": "元", "revenue": "元", "orders": "元", "tasks": "个", "bugs": "个" }
+        }
+      ],
+      "children": [
+        {
+          "channel": "company:sales",
+          "items": [
+            {
+              "period": "m",
+              "time": "2026-05-01T00:00:00.000Z",
+              "data": { "default": 130000, "revenue": 72000, "orders": 150 },
+              "unit": { "default": "元", "revenue": "元", "orders": "元" }
+            }
+          ],
+          "children": [
+            {
+              "channel": "company:sales:beijing",
+              "items": [
+                {
+                  "period": "m",
+                  "time": "2026-05-01T00:00:00.000Z",
+                  "data": { "default": 58000 },
+                  "unit": { "default": "元" }
+                }
+              ]
+            },
+            {
+              "channel": "company:sales:shanghai",
+              "items": [
+                {
+                  "period": "m",
+                  "time": "2026-05-01T00:00:00.000Z",
+                  "data": { "revenue": 72000, "orders": 150 },
+                  "unit": { "revenue": "元", "orders": "元" }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "channel": "company:rd",
+          "items": [
+            {
+              "period": "m",
+              "time": "2026-05-01T00:00:00.000Z",
+              "data": { "tasks": 12, "bugs": 3 },
+              "unit": { "tasks": "个", "bugs": "个" }
+            }
+          ],
+          "children": [
+            {
+              "channel": "company:rd:frontend",
+              "items": [
+                {
+                  "period": "m",
+                  "time": "2026-05-01T00:00:00.000Z",
+                  "data": { "tasks": 12, "bugs": 3 },
+                  "unit": { "tasks": "个", "bugs": "个" }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+查询多个通道（`channels=['company:sales','company:rd']`，默认不包含子通道）返回：
+
+```json
+{
+  "channelMetas": {
+    "company": { "channel": "company", "title": "公司", "description": "各部门经营数据统计" }
+  },
+  "list": [
     {
       "channel": "company:sales",
       "period": "m",
@@ -209,28 +286,7 @@ const revenueResult = await fastify.statistics.services.query({
       "unit": { "default": "元", "revenue": "元", "orders": "元" }
     },
     {
-      "channel": "company:sales:beijing",
-      "period": "m",
-      "time": "2026-05-01T00:00:00.000Z",
-      "data": { "default": 58000 },
-      "unit": { "default": "元" }
-    },
-    {
-      "channel": "company:sales:shanghai",
-      "period": "m",
-      "time": "2026-05-01T00:00:00.000Z",
-      "data": { "revenue": 72000, "orders": 150 },
-      "unit": { "revenue": "元", "orders": "元" }
-    },
-    {
       "channel": "company:rd",
-      "period": "m",
-      "time": "2026-05-01T00:00:00.000Z",
-      "data": { "tasks": 12, "bugs": 3 },
-      "unit": { "tasks": "个", "bugs": "个" }
-    },
-    {
-      "channel": "company:rd:frontend",
       "period": "m",
       "time": "2026-05-01T00:00:00.000Z",
       "data": { "tasks": 12, "bugs": 3 },
@@ -240,7 +296,7 @@ const revenueResult = await fastify.statistics.services.query({
 }
 ```
 
-查询 revenue 和 orders 两个属性的合计与平均（`channel=company`, `attributeNames=['revenue','orders']`, `aggregates=['sum','avg']`）返回：
+查询 revenue 和 orders 两个属性的合计与平均（`channels=['company']`, `attributeNames=['revenue','orders']`, `aggregates=['sum','avg']`）返回：
 
 ```json
 {
@@ -250,20 +306,6 @@ const revenueResult = await fastify.statistics.services.query({
   "list": [
     {
       "channel": "company",
-      "period": "m",
-      "time": "2026-05-01T00:00:00.000Z",
-      "data": { "sum": { "revenue": 72000, "orders": 150 }, "avg": { "revenue": 72000, "orders": 150 } },
-      "unit": { "revenue": "元", "orders": "元" }
-    },
-    {
-      "channel": "company:sales",
-      "period": "m",
-      "time": "2026-05-01T00:00:00.000Z",
-      "data": { "sum": { "revenue": 72000, "orders": 150 }, "avg": { "revenue": 72000, "orders": 150 } },
-      "unit": { "revenue": "元", "orders": "元" }
-    },
-    {
-      "channel": "company:sales:shanghai",
       "period": "m",
       "time": "2026-05-01T00:00:00.000Z",
       "data": { "sum": { "revenue": 72000, "orders": 150 }, "avg": { "revenue": 72000, "orders": 150 } },
@@ -311,7 +353,7 @@ await fastify.statistics.services.channelMeta.save({
 const eventSource = new EventSource('/api/statistics/sse?channel=company&aggregates=sum&interval=5');
 eventSource.onmessage = (event) => {
   const data = JSON.parse(event.data);
-  console.log(data); // { channel, period, time, data, unit }
+  console.log(data); // { channelMetas, list: [{ channel, items, children }] }
 };
 
 // 程序化调用（在 Fastify 路由中）
@@ -319,7 +361,7 @@ fastify.get('/my-sse', async (request, reply) => {
   const sseContext = await fastify.statistics.services.sseStream.send(reply, {
     name: 'my-sse-channel',
     params: {
-      channel: 'company',
+      channel: ['company'],
       startTime: new Date(Date.now() - 3600000).toISOString(),
       endTime: new Date().toISOString(),
       aggregates: ['sum']

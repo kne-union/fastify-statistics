@@ -267,7 +267,53 @@ module.exports = fp(async (fastify, options) => {
     return result;
   };
 
-  const query = async ({ channel, startTime, endTime, attributeNames, aggregates: queryAggregates, timezone: tz }) => {
+  const buildChannelTree = (flatResults, queriedChannels) => {
+    const channelGroups = {};
+    for (const item of flatResults) {
+      if (!channelGroups[item.channel]) {
+        channelGroups[item.channel] = [];
+      }
+      channelGroups[item.channel].push(item);
+    }
+
+    const buildNode = channel => {
+      const items = channelGroups[channel] || [];
+
+      const node = { channel };
+      if (items.length > 0) {
+        node.items = items.map(({ period, time, data, unit }) => {
+          const entry = { period, time, data };
+          if (unit !== undefined) entry.unit = unit;
+          return entry;
+        });
+      }
+
+      const prefix = channel + ':';
+      const directChildren = Object.keys(channelGroups)
+        .filter(ch => {
+          if (!ch.startsWith(prefix)) return false;
+          const rest = ch.slice(prefix.length);
+          return !rest.includes(':');
+        })
+        .sort();
+
+      if (directChildren.length > 0) {
+        node.children = directChildren.map(ch => buildNode(ch)).filter(Boolean);
+      }
+
+      return items.length > 0 || (node.children && node.children.length > 0) ? node : null;
+    };
+
+    const tree = [];
+    for (const rootChannel of queriedChannels) {
+      const node = buildNode(rootChannel);
+      if (node) tree.push(node);
+    }
+
+    return tree;
+  };
+
+  const query = async ({ channels, startTime, endTime, attributeNames, aggregates: queryAggregates, timezone: tz, includeChildren }) => {
     const aggregateList = queryAggregates && queryAggregates.length > 0 ? queryAggregates : AGGREGATE_TYPES.map(a => a.key);
 
     if (tz) {
@@ -278,11 +324,16 @@ module.exports = fp(async (fastify, options) => {
       }
     }
 
-    const channelWhere = channel
-      ? {
-          [Op.or]: [{ channel }, { channel: { [Op.like]: `${channel}:%` } }]
-        }
-      : {};
+    const channelList = Array.isArray(channels) ? channels : channels ? [channels] : [];
+
+    const channelWhere =
+      channelList.length > 0
+        ? includeChildren
+          ? {
+              [Op.or]: channelList.flatMap(ch => [{ channel: ch }, { channel: { [Op.like]: `${ch}:%` } }])
+            }
+          : { channel: { [Op.in]: channelList } }
+        : {};
 
     const attrWhere = attributeNames && attributeNames.length > 0 ? { attributeName: { [Op.in]: attributeNames } } : {};
 
@@ -355,7 +406,7 @@ module.exports = fp(async (fastify, options) => {
 
     const results = [];
     for (const group of Object.values(grouped)) {
-      const { data, unit } = formatGroupData(group._items, attributeNames && attributeNames.length > 0);
+      const { data, unit } = formatGroupData(group._items);
       const item = {
         channel: group.channel,
         period: group.period,
@@ -366,7 +417,7 @@ module.exports = fp(async (fastify, options) => {
       results.push(item);
     }
 
-    results.sort((a, b) => dayjs(a.time).valueOf() - dayjs(b.time).valueOf());
+    results.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
 
     const rootChannelSet = new Set();
     for (const r of results) {
@@ -384,7 +435,9 @@ module.exports = fp(async (fastify, options) => {
       }
     }
 
-    return { channelMetas, list: results };
+    const list = includeChildren ? buildChannelTree(results, channelList) : results;
+
+    return { channelMetas, list };
   };
 
   Object.assign(fastify[options.name].services, {

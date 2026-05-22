@@ -80,27 +80,29 @@ module.exports = fp(async (fastify, options) => {
         summary: '统计查询',
         query: {
           type: 'object',
-          required: ['channel', 'startTime', 'endTime'],
+          required: ['channels', 'startTime', 'endTime'],
           properties: {
-            channel: { type: 'string', description: '数据通道' },
+            channels: { type: 'string', description: '数据通道(逗号分隔多个通道)' },
             startTime: { type: 'string', description: '开始时间(ISO格式)' },
             endTime: { type: 'string', description: '结束时间(ISO格式)' },
             attributeNames: { type: 'string', description: '属性名列表(逗号分隔)' },
             aggregates: { type: 'string', description: '聚合方法列表(逗号分隔): sum,avg,count,min,max' },
-            timezone: { type: 'string', description: '客户端时区(如 Asia/Shanghai)' }
+            timezone: { type: 'string', description: '客户端时区(如 Asia/Shanghai)' },
+            includeChildren: { type: 'boolean', description: '是否包含子通道数据(默认false)' }
           }
         }
       }
     },
     async request => {
-      const { channel, startTime, endTime, attributeNames, aggregates, timezone } = request.query;
+      const { channels, startTime, endTime, attributeNames, aggregates, timezone, includeChildren } = request.query;
       return services.query({
-        channel,
+        channels: parseCommaList(channels),
         startTime: parseDate(startTime),
         endTime: parseDate(endTime),
         attributeNames: parseCommaList(attributeNames),
         aggregates: parseCommaList(aggregates),
-        timezone: timezone || undefined
+        timezone: timezone || undefined,
+        includeChildren: !!includeChildren
       });
     }
   );
@@ -114,32 +116,34 @@ module.exports = fp(async (fastify, options) => {
         summary: '实时统计SSE',
         query: {
           type: 'object',
-          required: ['channel'],
+          required: ['channels'],
           properties: {
-            channel: { type: 'string', description: '数据通道' },
+            channels: { type: 'string', description: '数据通道(逗号分隔多个通道)' },
             attributeNames: { type: 'string', description: '属性名列表(逗号分隔)' },
             aggregates: { type: 'string', description: '聚合方法列表(逗号分隔): sum,avg,count,min,max' },
             timezone: { type: 'string', description: '客户端时区(如 Asia/Shanghai)' },
+            includeChildren: { type: 'boolean', description: '是否包含子通道数据(默认false)' },
             interval: { type: 'number', description: '推送间隔秒数', default: 5 }
           }
         }
       }
     },
     async (request, reply) => {
-      const { channel, attributeNames, aggregates, timezone, interval } = request.query;
+      const { channels, attributeNames, aggregates, timezone, includeChildren, interval } = request.query;
       await services.sseStream.send(reply, {
         name: 'query',
-        params: { channel, attributeNames, aggregates, timezone },
+        params: { channels, attributeNames, aggregates, timezone, includeChildren },
         fetchData: async params => {
           const now = new Date();
           const startTime = new Date(now.getTime() - 3600000);
           return services.query({
-            channel: params.channel,
+            channels: parseCommaList(params.channels),
             startTime,
             endTime: now,
             attributeNames: parseCommaList(params.attributeNames),
             aggregates: parseCommaList(params.aggregates),
-            timezone: params.timezone || undefined
+            timezone: params.timezone || undefined,
+            includeChildren: !!params.includeChildren
           });
         },
         interval: interval || 5

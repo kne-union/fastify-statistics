@@ -441,7 +441,7 @@ describe('@kne/fastify-statistics', function () {
         });
 
         const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, aggregates: ['sum']
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum']
         });
 
         expect(results.length).to.equal(1);
@@ -465,7 +465,7 @@ describe('@kne/fastify-statistics', function () {
         );
 
         const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, aggregates: ['sum']
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum']
         });
 
         expect(results.length).to.equal(1);
@@ -487,7 +487,7 @@ describe('@kne/fastify-statistics', function () {
         );
 
         const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, aggregates: ['sum', 'avg']
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum', 'avg']
         });
 
         expect(results.length).to.equal(1);
@@ -511,7 +511,7 @@ describe('@kne/fastify-statistics', function () {
         );
 
         const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, aggregates: ['sum', 'avg']
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum', 'avg']
         });
 
         expect(results.length).to.equal(1);
@@ -535,7 +535,7 @@ describe('@kne/fastify-statistics', function () {
         );
 
         const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, attributeNames: ['default'], aggregates: ['sum']
+          channels: ['sensor'], startTime, endTime, attributeNames: ['default'], aggregates: ['sum']
         });
 
         expect(results[0].data).to.deep.equal({ default: 100 });
@@ -558,14 +558,19 @@ describe('@kne/fastify-statistics', function () {
         channelMetaRows.push({ channel: 'sensor', title: '传感器', description: '温度' });
 
         const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, aggregates: ['sum']
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum'], includeChildren: true
         });
 
-        expect(results.length).to.equal(3);
-        const channels = results.map(r => r.channel);
-        expect(channels).to.include('sensor');
-        expect(channels).to.include('sensor:room1');
-        expect(channels).to.include('sensor:room2');
+        expect(results.length).to.equal(1);
+        const root = results[0];
+        expect(root.channel).to.equal('sensor');
+        expect(root.items[0].data).to.deep.equal({ default: 100 });
+        expect(root.children.length).to.equal(2);
+        const childChannels = root.children.map(c => c.channel);
+        expect(childChannels).to.include('sensor:room1');
+        expect(childChannels).to.include('sensor:room2');
+        const room1 = root.children.find(c => c.channel === 'sensor:room1');
+        expect(room1.items[0].data).to.deep.equal({ default: 50 });
 
         expect(channelMetas).to.have.property('sensor');
         expect(channelMetas.sensor.title).to.equal('传感器');
@@ -587,7 +592,7 @@ describe('@kne/fastify-statistics', function () {
         );
 
         const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, aggregates: ['sum']
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum']
         });
 
         const periodTypes = results.map(r => r.period);
@@ -609,7 +614,7 @@ describe('@kne/fastify-statistics', function () {
         const endTime = new Date('2026-05-01T01:00:00.000Z');
 
         const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
-          channel: 'nonexistent', startTime, endTime, aggregates: ['sum']
+          channels: ['nonexistent'], startTime, endTime, aggregates: ['sum']
         });
 
         expect(results).to.deep.equal([]);
@@ -630,7 +635,7 @@ describe('@kne/fastify-statistics', function () {
         );
 
         const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, attributeNames: ['temperature'], aggregates: ['sum']
+          channels: ['sensor'], startTime, endTime, attributeNames: ['temperature'], aggregates: ['sum']
         });
 
         expect(results.length).to.equal(1);
@@ -653,7 +658,7 @@ describe('@kne/fastify-statistics', function () {
         });
 
         const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, aggregates: ['sum']
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum']
         });
 
         const drCalls = findAllCalls.filter(c => c.model === 'dataRecord');
@@ -683,7 +688,7 @@ describe('@kne/fastify-statistics', function () {
         );
 
         const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime
+          channels: ['sensor'], startTime, endTime
         });
 
         expect(results.length).to.equal(1);
@@ -710,7 +715,7 @@ describe('@kne/fastify-statistics', function () {
         );
 
         const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, aggregates: ['sum']
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum']
         });
 
         expect(results[0].data).to.deep.equal({ default: 10 });
@@ -734,11 +739,11 @@ describe('@kne/fastify-statistics', function () {
         });
 
         const resultsNoTz = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, aggregates: ['sum']
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum']
         });
 
         const resultsWithTz = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, aggregates: ['sum'], timezone: 'Asia/Shanghai'
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum'], timezone: 'Asia/Shanghai'
         });
 
         const drCallsNoTz = findAllCalls.filter(c => c.model === 'dataRecord');
@@ -761,7 +766,7 @@ describe('@kne/fastify-statistics', function () {
         });
 
         await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, aggregates: ['sum'], timezone: 'America/New_York'
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum'], timezone: 'America/New_York'
         });
 
         const drCalls = findAllCalls.filter(c => c.model === 'dataRecord');
@@ -779,7 +784,7 @@ describe('@kne/fastify-statistics', function () {
 
         try {
           await fastify.statistics.services.periodStat.query({
-            channel: 'sensor', startTime, endTime, aggregates: ['sum'], timezone: 'Invalid/Timezone'
+            channels: ['sensor'], startTime, endTime, aggregates: ['sum'], timezone: 'Invalid/Timezone'
           });
           expect.fail('should have thrown');
         } catch (e) {
@@ -829,7 +834,7 @@ describe('@kne/fastify-statistics', function () {
         );
 
         const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, aggregates: ['sum']
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum']
         });
 
         expect(results.length).to.equal(1);
@@ -850,7 +855,7 @@ describe('@kne/fastify-statistics', function () {
         );
 
         const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, attributeNames: ['value'], aggregates: ['sum']
+          channels: ['sensor'], startTime, endTime, attributeNames: ['value'], aggregates: ['sum']
         });
 
         expect(results.length).to.equal(1);
@@ -872,7 +877,7 @@ describe('@kne/fastify-statistics', function () {
         );
 
         const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, attributeNames: ['value'], aggregates: ['sum', 'avg']
+          channels: ['sensor'], startTime, endTime, attributeNames: ['value'], aggregates: ['sum', 'avg']
         });
 
         expect(results.length).to.equal(1);
@@ -898,7 +903,7 @@ describe('@kne/fastify-statistics', function () {
         });
 
         const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, aggregates: ['sum', 'avg']
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum', 'avg']
         });
 
         const hourResult = results.find(r => r.period === 'h');
@@ -925,7 +930,7 @@ describe('@kne/fastify-statistics', function () {
         });
 
         const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, aggregates: ['sum']
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum']
         });
 
         expect(results.length).to.be.greaterThan(0);
@@ -947,7 +952,7 @@ describe('@kne/fastify-statistics', function () {
         });
 
         const { list: results, channelMetas } = await fastify.statistics.services.periodStat.query({
-          channel: 'sensor', startTime, endTime, aggregates: ['sum']
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum']
         });
 
         const drCalls = findAllCalls.filter(c => c.model === 'dataRecord');
