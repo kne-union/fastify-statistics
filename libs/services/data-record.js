@@ -1,12 +1,11 @@
 const fp = require('fastify-plugin');
 
-const BUFFER_CACHE_KEY = 'statistics:data-record:buffer';
-
 module.exports = fp(async (fastify, options) => {
   const { models } = fastify[options.name];
   const { Op } = fastify.sequelize.Sequelize;
   const sequelize = fastify.sequelize.instance;
   const log = fastify.log;
+  const BUFFER_CACHE_KEY = `${options.name || 'statistics'}:data-record:buffer`;
   const cache = options.cache || null;
 
   const flushInterval = options.collectFlushInterval || 5000;
