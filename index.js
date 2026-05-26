@@ -13,7 +13,11 @@ module.exports = fp(
         collectMaxBufferSize: 1000,
         cache: null,
         getAuthenticate: () => {
-          throw new Error('接口禁止访问');
+          return [
+            () => {
+              throw new Error('接口禁止访问');
+            }
+          ];
         }
       },
       options
