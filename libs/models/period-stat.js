@@ -44,7 +44,7 @@ module.exports = ({ DataTypes, options }) => {
     },
     options: {
       comment: '周期统计',
-      indexes: [{ unique: true, fields: ['period', 'channel', 'attributeName', 'aggregate', 'time'] }, { fields: ['channel', 'attributeName', 'time'] }, { fields: ['period', 'time'] }, { fields: ['attributeName'] }]
+      indexes: [{ unique: true, fields: ['period', 'channel', 'attribute_name', 'aggregate', 'time'] }, { fields: ['channel', 'attribute_name', 'time'] }, { fields: ['period', 'time'] }, { fields: ['attribute_name'] }]
     }
   };
 };

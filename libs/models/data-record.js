@@ -34,7 +34,7 @@ module.exports = ({ DataTypes, options }) => {
     },
     options: {
       comment: '数据采集记录',
-      indexes: [{ fields: ['channel'] }, { fields: ['time'] }, { fields: ['channel', 'time'] }, { fields: ['channel', 'attributeName', 'time'] }, { fields: ['attributeName'] }]
+      indexes: [{ fields: ['channel'] }, { fields: ['time'] }, { fields: ['channel', 'time'] }, { fields: ['channel', 'attribute_name', 'time'] }, { fields: ['attribute_name'] }]
     }
   };
 };
