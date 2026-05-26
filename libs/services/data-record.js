@@ -43,6 +43,7 @@ module.exports = fp(async (fastify, options) => {
   const getRootChannel = channel => channel.split(':')[0];
 
   const ensureChannelMeta = async (metaList, transaction) => {
+    const metaMap = {};
     for (const meta of metaList) {
       const options = {
         where: { channel: meta.channel },
@@ -51,8 +52,10 @@ module.exports = fp(async (fastify, options) => {
       if (transaction) {
         options.transaction = transaction;
       }
-      await models.channelMeta.findOrCreate(options);
+      const [instance] = await models.channelMeta.findOrCreate(options);
+      metaMap[meta.channel] = instance.id;
     }
+    return metaMap;
   };
 
   const flush = async () => {
@@ -141,7 +144,13 @@ module.exports = fp(async (fastify, options) => {
 
     const transaction = await sequelize.transaction();
     try {
-      await ensureChannelMeta(metaList, transaction);
+      const metaMap = await ensureChannelMeta(metaList, transaction);
+      for (const record of records) {
+        const rootChannel = getRootChannel(record.channel);
+        if (metaMap[rootChannel] !== undefined) {
+          record.channelMetaId = metaMap[rootChannel];
+        }
+      }
       await models.dataRecord.bulkCreate(records, { transaction });
       await transaction.commit();
     } catch (e) {
@@ -163,7 +172,13 @@ module.exports = fp(async (fastify, options) => {
         buffer.push({ ...item, channel, _seq: nextSeq() });
       }
     }
-    await ensureChannelMeta(metaList);
+    const metaMap = await ensureChannelMeta(metaList);
+    for (const item of buffer) {
+      const rootChannel = getRootChannel(item.channel);
+      if (metaMap[rootChannel] !== undefined) {
+        item.channelMetaId = metaMap[rootChannel];
+      }
+    }
     startFlushTimer();
     if (buffer.length >= maxBufferSize) {
       flush().catch(e => {
