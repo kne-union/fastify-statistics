@@ -108,13 +108,17 @@ module.exports = fp(async (fastify, options) => {
   };
 
   const expandData = data => {
-    const { data: dataValue, ...rest } = data;
+    const { data: dataValue, unit, ...rest } = data;
     if (dataValue !== null && typeof dataValue === 'object' && !Array.isArray(dataValue)) {
-      return Object.entries(dataValue).map(([attributeName, value]) => ({
-        ...rest,
-        attributeName,
-        data: value
-      }));
+      return Object.entries(dataValue).map(([attributeName, value]) => {
+        const unitValue = unit !== null && typeof unit === 'object' && !Array.isArray(unit) ? unit[attributeName] : unit;
+        return {
+          ...rest,
+          attributeName,
+          data: value,
+          ...(unitValue !== undefined ? { unit: unitValue } : {})
+        };
+      });
     }
     return [data];
   };
