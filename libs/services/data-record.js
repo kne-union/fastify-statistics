@@ -130,7 +130,7 @@ module.exports = fp(async (fastify, options) => {
         metaList.push({ channel: rootChannel, title: item.title, description: item.description });
       }
       for (const channel of channels) {
-        const { data: _, title, description, ...rest } = item;
+        const { title, description, ...rest } = item;
         records.push({ ...rest, channel });
       }
     }
