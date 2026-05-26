@@ -106,6 +106,67 @@ describe('@kne/fastify-statistics', function () {
         await fastify.close();
       });
 
+      it('should preserve data values in collectImmediate records', async () => {
+        const { fastify, bulkCreateCalls } = createMockFastify();
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1000
+        });
+
+        await fastify.statistics.services.dataRecord.collect({
+          channel: 'ch1',
+          data: { total: 1, success: 1, waitingTime: 5000 },
+          unit: 'ms',
+          time: new Date()
+        });
+
+        expect(bulkCreateCalls.length).to.equal(1);
+        const records = bulkCreateCalls[0];
+
+        // 验证 data 字段值被正确保留（之前的 bug：data 被解构丢弃，存入 DB 时为默认值 0）
+        const totalRecords = records.filter(r => r.attributeName === 'total');
+        const successRecords = records.filter(r => r.attributeName === 'success');
+        const waitingRecords = records.filter(r => r.attributeName === 'waitingTime');
+
+        expect(totalRecords.length).to.equal(1);
+        expect(totalRecords[0].data).to.equal(1);
+        expect(successRecords.length).to.equal(1);
+        expect(successRecords[0].data).to.equal(1);
+        expect(waitingRecords.length).to.equal(1);
+        expect(waitingRecords[0].data).to.equal(5000);
+
+        // 验证 unit 字段也被保留
+        expect(waitingRecords[0].unit).to.equal('ms');
+
+        await fastify.close();
+      });
+
+      it('should preserve scalar data value in collectImmediate', async () => {
+        const { fastify, bulkCreateCalls } = createMockFastify();
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1000
+        });
+
+        await fastify.statistics.services.dataRecord.collect({
+          channel: 'temperature',
+          data: 36.5,
+          unit: '℃',
+          time: new Date()
+        });
+
+        expect(bulkCreateCalls.length).to.equal(1);
+        const records = bulkCreateCalls[0];
+        // 标量值不展开，data 应该直接保留
+        expect(records.length).to.equal(1);
+        expect(records[0].data).to.equal(36.5);
+        expect(records[0].unit).to.equal('℃');
+
+        await fastify.close();
+      });
+
       it('should not start flush timer when no cache', async () => {
         const { fastify, bulkCreateCalls } = createMockFastify();
         await mockDataRecordService(fastify, {
