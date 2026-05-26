@@ -90,7 +90,7 @@ await fastify.statistics.services.collect({
   description: '各部门经营数据统计'
 });
 
-// 2. 销售部上海分部上报多指标（自动展开为多条记录）
+// 2. 销售部上海分部上报多指标，unit 为字符串时所有属性共用同一单位
 await fastify.statistics.services.collect({
   channel: 'company:sales:shanghai',
   data: { revenue: 72000, orders: 150 },
@@ -99,10 +99,11 @@ await fastify.statistics.services.collect({
   description: '各部门经营数据统计'
 });
 
-// 3. 研发部前端组上报
+// 3. 研发部前端组上报，unit 为对象时按 attributeName 映射不同单位
 await fastify.statistics.services.collect({
   channel: 'company:rd:frontend',
   data: { tasks: 12, bugs: 3 },
+  unit: { tasks: '个', bugs: '个' },
   title: '公司',
   description: '各部门经营数据统计'
 });

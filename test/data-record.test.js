@@ -567,6 +567,146 @@ describe('@kne/fastify-statistics', function () {
       });
     });
 
+    describe('unit 展开规则测试', () => {
+      it('should apply string unit to all expanded attributes', async () => {
+        const { fastify, bulkCreateCalls } = createMockFastify();
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1000
+        });
+
+        await fastify.statistics.services.dataRecord.collect({
+          channel: 'sensor',
+          data: { temperature: 25, humidity: 60 },
+          unit: '℃',
+          time: new Date()
+        });
+
+        expect(bulkCreateCalls.length).to.equal(1);
+        const records = bulkCreateCalls[0];
+        const tempRecords = records.filter(r => r.attributeName === 'temperature');
+        const humidityRecords = records.filter(r => r.attributeName === 'humidity');
+
+        expect(tempRecords.length).to.equal(1);
+        expect(tempRecords[0].unit).to.equal('℃');
+        expect(humidityRecords.length).to.equal(1);
+        expect(humidityRecords[0].unit).to.equal('℃');
+
+        await fastify.close();
+      });
+
+      it('should map object unit by attributeName', async () => {
+        const { fastify, bulkCreateCalls } = createMockFastify();
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1000
+        });
+
+        await fastify.statistics.services.dataRecord.collect({
+          channel: 'sensor',
+          data: { temperature: 25, humidity: 60 },
+          unit: { temperature: '℃', humidity: '%' },
+          time: new Date()
+        });
+
+        expect(bulkCreateCalls.length).to.equal(1);
+        const records = bulkCreateCalls[0];
+        const tempRecords = records.filter(r => r.attributeName === 'temperature');
+        const humidityRecords = records.filter(r => r.attributeName === 'humidity');
+
+        expect(tempRecords.length).to.equal(1);
+        expect(tempRecords[0].unit).to.equal('℃');
+        expect(humidityRecords.length).to.equal(1);
+        expect(humidityRecords[0].unit).to.equal('%');
+
+        await fastify.close();
+      });
+
+      it('should not set unit when object unit does not contain the attributeName key', async () => {
+        const { fastify, bulkCreateCalls } = createMockFastify();
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1000
+        });
+
+        await fastify.statistics.services.dataRecord.collect({
+          channel: 'sensor',
+          data: { temperature: 25, humidity: 60 },
+          unit: { temperature: '℃' },
+          time: new Date()
+        });
+
+        expect(bulkCreateCalls.length).to.equal(1);
+        const records = bulkCreateCalls[0];
+        const tempRecords = records.filter(r => r.attributeName === 'temperature');
+        const humidityRecords = records.filter(r => r.attributeName === 'humidity');
+
+        expect(tempRecords.length).to.equal(1);
+        expect(tempRecords[0].unit).to.equal('℃');
+        expect(humidityRecords.length).to.equal(1);
+        expect(humidityRecords[0].unit).to.be.undefined;
+
+        await fastify.close();
+      });
+
+      it('should preserve scalar data with string unit', async () => {
+        const { fastify, bulkCreateCalls } = createMockFastify();
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1000
+        });
+
+        await fastify.statistics.services.dataRecord.collect({
+          channel: 'sensor',
+          data: 25,
+          unit: '℃',
+          time: new Date()
+        });
+
+        expect(bulkCreateCalls.length).to.equal(1);
+        const records = bulkCreateCalls[0];
+        expect(records.length).to.equal(1);
+        expect(records[0].unit).to.equal('℃');
+
+        await fastify.close();
+      });
+
+      it('should work with object unit in buffered mode', async () => {
+        const { fastify, bulkCreateCalls, cache } = createMockFastify({ maxBufferSize: 1 });
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1,
+          cache
+        });
+
+        fastify.statistics.services.dataRecord.collect({
+          channel: 'sensor',
+          data: { temperature: 25, humidity: 60 },
+          unit: { temperature: '℃', humidity: '%' },
+          time: new Date()
+        });
+
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        expect(bulkCreateCalls.length).to.equal(1);
+        const records = bulkCreateCalls[0];
+        const tempRecords = records.filter(r => r.attributeName === 'temperature');
+        const humidityRecords = records.filter(r => r.attributeName === 'humidity');
+
+        expect(tempRecords.length).to.equal(1);
+        expect(tempRecords[0].unit).to.equal('℃');
+        expect(humidityRecords.length).to.equal(1);
+        expect(humidityRecords[0].unit).to.equal('%');
+
+        await fastify.close();
+      });
+    });
+
     describe('事务回滚测试', () => {
       it('should rollback transaction when collectImmediate bulkCreate fails', async () => {
         const { fastify, mockModel } = createMockFastify();

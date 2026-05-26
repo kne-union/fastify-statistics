@@ -44,7 +44,12 @@ module.exports = ({ DataTypes, options }) => {
     },
     options: {
       comment: '周期统计',
-      indexes: [{ unique: true, fields: ['period', 'channel', 'attribute_name', 'aggregate', 'time'] }, { fields: ['channel', 'attribute_name', 'time'] }, { fields: ['period', 'time'] }, { fields: ['attribute_name'] }]
+      indexes: [
+        { name: 'idx_period_stat_unique', unique: true, fields: ['period', 'channel', 'attribute_name', 'aggregate', 'time'] },
+        { name: 'idx_period_stat_channel_attr_time', fields: ['channel', 'attribute_name', 'time'] },
+        { name: 'idx_period_stat_period_time', fields: ['period', 'time'] },
+        { name: 'idx_period_stat_attr_name', fields: ['attribute_name'] }
+      ]
     }
   };
 };

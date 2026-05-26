@@ -25,7 +25,7 @@
 | title | string | 否 | channel | 标题 |
 | description | string | 否 | - | 描述 |
 | attributeName | string | 否 | `default` | 属性名 |
-| unit | string | 否 | - | 数据单位 |
+| unit | string / object | 否 | - | 数据单位。字符串时所有属性共用同一单位；对象时按 attributeName 映射单位，如 `{temp: '℃', humidity: '%'}` |
 | time | string | 否 | 当前时间 | 采集时间(ISO格式) |
 
 **请求体（批量）**：以上对象的数组。
@@ -33,6 +33,8 @@
 **通道展开规则**：`device:sensor1` 会展开为 `device:sensor1` 和 `device` 两个通道记录。
 
 **数据展开规则**：`data` 为对象时，按属性名拆分为多条记录。例如 `data: {temp: 25, humidity: 60}` 拆分为两条：`{attributeName: 'temp', data: 25}` 和 `{attributeName: 'humidity', data: 60}`。
+
+**单位展开规则**：`unit` 为字符串时，所有属性共用同一单位；`unit` 为对象时，以 attributeName 为 key 获取对应单位，未匹配到的属性不设置单位。例如 `data: {temp: 25, humidity: 60}`，`unit: {temp: '℃', humidity: '%'}` 展开后 temp 的单位为 `℃`，humidity 的单位为 `%`；若 `unit: '℃'`，则两者单位均为 `℃`。
 
 **缓冲模式**：当配置 `cache` 时，采集数据先写入内存缓冲区，定时或缓冲区满时批量写入数据库；否则直接写入。
 
