@@ -1,4 +1,5 @@
 const fp = require('fastify-plugin');
+const dayjs = require('dayjs');
 
 module.exports = fp(async (fastify, options) => {
   const { models } = fastify[options.name];
@@ -6,11 +7,11 @@ module.exports = fp(async (fastify, options) => {
   const sequelize = fastify.sequelize.instance;
   const log = fastify.log;
   const BUFFER_CACHE_KEY = `${options.name || 'statistics'}:data-record:buffer`;
-  const cache = options.cache || null;
+  const cache = options.cache ?? null;
 
-  const flushInterval = options.collectFlushInterval || 5000;
-  const maxBufferSize = options.collectMaxBufferSize || 1000;
-  const maxBufferOverflow = options.collectMaxBufferOverflow || maxBufferSize * 2;
+  const flushInterval = options.collectFlushInterval ?? 5000;
+  const maxBufferSize = options.collectMaxBufferSize ?? 1000;
+  const maxBufferOverflow = options.collectMaxBufferOverflow ?? maxBufferSize * 2;
 
   let buffer = [];
   let seq = 0;
@@ -25,6 +26,8 @@ module.exports = fp(async (fastify, options) => {
   const persistBuffer = async () => {
     if (!cache || buffer.length === 0) return;
     try {
+      const affectedChannels = [...new Set(buffer.map(item => item.channel))];
+      fastify[options.name]?.services?.periodStat?.invalidateQueryCache?.(affectedChannels);
       await cache.set(BUFFER_CACHE_KEY, buffer);
     } catch (e) {
       log.error({ err: e }, 'Failed to persist buffer to cache');
@@ -47,7 +50,7 @@ module.exports = fp(async (fastify, options) => {
     for (const meta of metaList) {
       const options = {
         where: { channel: meta.channel },
-        defaults: { title: meta.title || meta.channel, description: meta.description || null }
+        defaults: { title: meta.title ?? meta.channel, description: meta.description ?? null }
       };
       if (transaction) {
         options.transaction = transaction;
@@ -75,6 +78,8 @@ module.exports = fp(async (fastify, options) => {
         await transaction.rollback();
         throw e;
       }
+      const affectedChannels = [...new Set(items.map(item => item.channel))];
+      fastify[options.name]?.services?.periodStat?.invalidateQueryCache?.(affectedChannels);
       await cache.set(BUFFER_CACHE_KEY, buffer);
     } catch (e) {
       buffer = [...items, ...buffer].slice(-maxBufferOverflow);
@@ -157,11 +162,14 @@ module.exports = fp(async (fastify, options) => {
       await transaction.rollback();
       throw e;
     }
+    const affectedChannels = [...new Set(records.map(r => r.channel))];
+    fastify[options.name]?.services?.periodStat?.invalidateQueryCache?.(affectedChannels);
   };
 
   const collectBuffered = async data => {
     const expanded = expandData(data);
     const metaList = [];
+    const newEntries = [];
     for (const item of expanded) {
       const channels = expandChannel(item.channel);
       const rootChannel = getRootChannel(item.channel);
@@ -169,11 +177,13 @@ module.exports = fp(async (fastify, options) => {
         metaList.push({ channel: rootChannel, title: item.title, description: item.description });
       }
       for (const channel of channels) {
-        buffer.push({ ...item, channel, _seq: nextSeq() });
+        const entry = { ...item, channel, _seq: nextSeq() };
+        buffer.push(entry);
+        newEntries.push(entry);
       }
     }
     const metaMap = await ensureChannelMeta(metaList);
-    for (const item of buffer) {
+    for (const item of newEntries) {
       const rootChannel = getRootChannel(item.channel);
       if (metaMap[rootChannel] !== undefined) {
         item.channelMetaId = metaMap[rootChannel];
@@ -189,6 +199,23 @@ module.exports = fp(async (fastify, options) => {
 
   const collect = cache ? collectBuffered : collectImmediate;
 
+  const dataRetentionDays = options.dataRetentionDays ?? 7;
+
+  const cleanupOldDataRecords = async () => {
+    const cutoffTime = dayjs().subtract(dataRetentionDays, 'day').toDate();
+    const hWatermark = await models.aggregationWatermark.findOne({ where: { period: 'h' } });
+    const safeCutoff = hWatermark && new Date(hWatermark.nextTime) < cutoffTime ? new Date(hWatermark.nextTime) : cutoffTime;
+    const count = await models.dataRecord.destroy({
+      where: {
+        time: { [Op.lt]: safeCutoff }
+      }
+    });
+    if (count > 0) {
+      log.info(`Cleaned up ${count} old data records before ${safeCutoff.toISOString()}`);
+    }
+    return count;
+  };
+
   if (cache) {
     await restoreBuffer();
     startFlushTimer();
@@ -200,11 +227,27 @@ module.exports = fp(async (fastify, options) => {
     });
   }
 
+  if (fastify.cron) {
+    fastify.cron.createJob({
+      name: 'statistics-data-record-cleanup',
+      cronTime: '0 2 * * *',
+      onTick: async () => {
+        try {
+          await cleanupOldDataRecords();
+        } catch (e) {
+          log.error(`Failed to cleanup old data records: ${e.message}`);
+        }
+      },
+      startWhenReady: true
+    });
+  }
+
   Object.assign(fastify[options.name].services, {
     collect,
     dataRecord: {
       collect,
-      flush
+      flush,
+      cleanup: cleanupOldDataRecords
     }
   });
 });

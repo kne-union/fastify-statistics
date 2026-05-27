@@ -15,6 +15,11 @@ const ITEM_PROPERTIES = {
 
 const parseCommaList = value => (value ? value.split(',') : undefined);
 
+const parseBoolean = value => {
+  if (value === true || value === 'true' || value === '1') return true;
+  return false;
+};
+
 const parseDate = value => {
   const date = new Date(value);
   if (isNaN(date.getTime())) {
@@ -53,20 +58,21 @@ module.exports = fp(async (fastify, options) => {
     },
     async request => {
       const items = Array.isArray(request.body) ? request.body : [request.body];
-      const results = await Promise.all(
-        items.map(async item => {
-          const { channel, title, description, attributeName, data, unit, time } = item;
-          return services.collect({
+      const results = [];
+      for (const item of items) {
+        const { channel, title, description, attributeName, data, unit, time } = item;
+        results.push(
+          await services.collect({
             channel,
-            title: title || channel,
+            title: title ?? channel,
             description,
             attributeName,
             data,
             unit,
             time: time ? parseDate(time) : new Date()
-          });
-        })
-      );
+          })
+        );
+      }
       return Array.isArray(request.body) ? results : results[0];
     }
   );
@@ -102,7 +108,7 @@ module.exports = fp(async (fastify, options) => {
         attributeNames: parseCommaList(attributeNames),
         aggregates: parseCommaList(aggregates),
         timezone: timezone || undefined,
-        includeChildren: !!includeChildren
+        includeChildren: parseBoolean(includeChildren)
       });
     }
   );
@@ -143,10 +149,10 @@ module.exports = fp(async (fastify, options) => {
             attributeNames: parseCommaList(params.attributeNames),
             aggregates: parseCommaList(params.aggregates),
             timezone: params.timezone || undefined,
-            includeChildren: !!params.includeChildren
+            includeChildren: parseBoolean(params.includeChildren)
           });
         },
-        interval: interval || 5
+        interval: interval ?? 5
       });
     }
   );

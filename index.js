@@ -12,6 +12,13 @@ module.exports = fp(
         collectFlushInterval: 5000,
         collectMaxBufferSize: 1000,
         cache: null,
+        compensationBatchSize: 24,
+        compensationEnabled: true,
+        dataRetentionDays: 7,
+        queryCacheEnabled: true,
+        queryCacheTTL: 30,
+        queryCacheHistoryTTL: 3600,
+        queryCacheMaxEntries: 100,
         getAuthenticate: () => {
           return [
             () => {

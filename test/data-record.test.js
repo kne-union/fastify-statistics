@@ -24,7 +24,7 @@ const createMockFastify = ({ flushInterval = 100, maxBufferSize = 3 } = {}) => {
     channelMeta: {
       findOrCreate: async (opts) => {
         channelMetaCalls.push(opts);
-        return [{ ...opts.defaults, ...opts.where }, false];
+        return [{ id: 1, ...opts.defaults, ...opts.where }, false];
       }
     }
   };
@@ -872,6 +872,247 @@ describe('@kne/fastify-statistics', function () {
         expect(errorLogged).to.be.true;
 
         fastify.log.error = origLogError;
+        await fastify.close();
+      });
+    });
+
+    describe('cleanupOldDataRecords 测试', () => {
+      it('should delete records older than dataRetentionDays', async () => {
+        const { fastify, cache } = createMockFastify();
+        const destroyCalls = [];
+        const mockAggregationWatermark = {
+          findOne: async () => null
+        };
+
+        fastify.statistics.models.dataRecord.destroy = async (opts) => {
+          destroyCalls.push(opts);
+          return 5;
+        };
+        fastify.statistics.models.aggregationWatermark = mockAggregationWatermark;
+
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1000,
+          cache,
+          dataRetentionDays: 7
+        });
+
+        const count = await fastify.statistics.services.dataRecord.cleanup();
+        expect(destroyCalls.length).to.equal(1);
+        expect(count).to.equal(5);
+
+        await fastify.close();
+      });
+
+      it('should use watermark as safe cutoff when it is earlier than cutoffTime', async () => {
+        const { fastify, cache } = createMockFastify();
+        const destroyCalls = [];
+        const watermarkTime = new Date('2026-01-01T00:00:00.000Z');
+        const mockAggregationWatermark = {
+          findOne: async () => ({ period: 'h', nextTime: watermarkTime })
+        };
+
+        fastify.statistics.models.dataRecord.destroy = async (opts) => {
+          destroyCalls.push(opts);
+          return 3;
+        };
+        fastify.statistics.models.aggregationWatermark = mockAggregationWatermark;
+
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1000,
+          cache,
+          dataRetentionDays: 7
+        });
+
+        const count = await fastify.statistics.services.dataRecord.cleanup();
+        expect(destroyCalls.length).to.equal(1);
+        // The safeCutoff should be the watermark time since it's earlier than cutoffTime
+        const usedTime = destroyCalls[0].where.time[Object.keys(destroyCalls[0].where.time)[0]];
+        expect(new Date(usedTime).getTime()).to.equal(watermarkTime.getTime());
+
+        await fastify.close();
+      });
+
+      it('should not log when no records deleted', async () => {
+        const { fastify, cache } = createMockFastify();
+        let infoLogged = false;
+        const origLogInfo = fastify.log.info;
+        fastify.log.info = function (msg) {
+          infoLogged = true;
+          return origLogInfo ? origLogInfo.call(this, msg) : undefined;
+        };
+
+        fastify.statistics.models.dataRecord.destroy = async () => 0;
+        fastify.statistics.models.aggregationWatermark = {
+          findOne: async () => null
+        };
+
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1000,
+          cache,
+          dataRetentionDays: 7
+        });
+
+        await fastify.statistics.services.dataRecord.cleanup();
+        expect(infoLogged).to.be.false;
+
+        fastify.log.info = origLogInfo;
+        await fastify.close();
+      });
+
+      it('should log when records are deleted', async () => {
+        const { fastify, cache } = createMockFastify();
+        let infoLogged = false;
+        const origLogInfo = fastify.log.info;
+        fastify.log.info = function (msg) {
+          infoLogged = true;
+          return origLogInfo ? origLogInfo.call(this, msg) : undefined;
+        };
+
+        fastify.statistics.models.dataRecord.destroy = async () => 10;
+        fastify.statistics.models.aggregationWatermark = {
+          findOne: async () => null
+        };
+
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1000,
+          cache,
+          dataRetentionDays: 7
+        });
+
+        await fastify.statistics.services.dataRecord.cleanup();
+        expect(infoLogged).to.be.true;
+
+        fastify.log.info = origLogInfo;
+        await fastify.close();
+      });
+    });
+
+    describe('cron 清理任务注册测试', () => {
+      it('should register cleanup cron job when fastify.cron is available', async () => {
+        const { fastify, bulkCreateCalls, cache } = createMockFastify();
+        const createdJobs = [];
+
+        fastify.statistics.models.dataRecord.destroy = async () => 0;
+        fastify.statistics.models.aggregationWatermark = {
+          findOne: async () => null
+        };
+
+        fastify.decorate('cron', {
+          createJob: (jobConfig) => {
+            createdJobs.push(jobConfig);
+          }
+        });
+
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1000,
+          cache
+        });
+
+        const cleanupJob = createdJobs.find(j => j.name === 'statistics-data-record-cleanup');
+        expect(cleanupJob).to.exist;
+        expect(cleanupJob.cronTime).to.equal('0 2 * * *');
+        expect(cleanupJob.startWhenReady).to.be.true;
+
+        // Execute onTick
+        await cleanupJob.onTick();
+
+        await fastify.close();
+      });
+
+      it('should catch error in cleanup cron onTick', async () => {
+        const { fastify, cache } = createMockFastify();
+        const createdJobs = [];
+        let errorLogged = false;
+        const origLogError = fastify.log.error;
+        fastify.log.error = function (msg) {
+          errorLogged = true;
+          return origLogError ? origLogError.call(this, msg) : undefined;
+        };
+
+        fastify.statistics.models.dataRecord.destroy = async () => { throw new Error('Cleanup error'); };
+        fastify.statistics.models.aggregationWatermark = {
+          findOne: async () => null
+        };
+
+        fastify.decorate('cron', {
+          createJob: (jobConfig) => {
+            createdJobs.push(jobConfig);
+          }
+        });
+
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1000,
+          cache
+        });
+
+        const cleanupJob = createdJobs.find(j => j.name === 'statistics-data-record-cleanup');
+        await cleanupJob.onTick();
+
+        expect(errorLogged).to.be.true;
+
+        fastify.log.error = origLogError;
+        await fastify.close();
+      });
+    });
+
+    describe('channelMetaId 赋值测试', () => {
+      it('should assign channelMetaId in collectBuffered mode', async () => {
+        const { fastify, bulkCreateCalls, channelMetaCalls, cache } = createMockFastify({ maxBufferSize: 1 });
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1,
+          cache
+        });
+
+        fastify.statistics.services.dataRecord.collect({
+          channel: 'ch1',
+          title: 'test',
+          data: 1,
+          time: new Date()
+        });
+
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        expect(bulkCreateCalls.length).to.equal(1);
+        const record = bulkCreateCalls[0][0];
+        // channelMetaId should be set from ensureChannelMeta result
+        expect(record.channelMetaId).to.exist;
+
+        await fastify.close();
+      });
+
+      it('should assign channelMetaId in collectImmediate mode', async () => {
+        const { fastify, bulkCreateCalls } = createMockFastify();
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1000
+        });
+
+        await fastify.statistics.services.dataRecord.collect({
+          channel: 'ch1',
+          title: 'test',
+          data: 1,
+          time: new Date()
+        });
+
+        expect(bulkCreateCalls.length).to.equal(1);
+        const record = bulkCreateCalls[0][0];
+        expect(record.channelMetaId).to.exist;
+
         await fastify.close();
       });
     });

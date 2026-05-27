@@ -34,7 +34,14 @@ fastify.register(require('@kne/fastify-cron'), { /* cron 配置 */ });
 // 注册统计插件
 fastify.register(require('@kne/fastify-statistics'), {
   prefix: '/api/statistics',
-  cache: redisCacheInstance,   // 传入缓存实例启用缓冲模式
+  cache: redisCacheInstance,   // 传入缓存实例启用缓冲模式和查询缓存
+  compensationEnabled: true,   // 启动时自动补偿聚合
+  compensationBatchSize: 24,   // 每次补偿最多24个时间窗口
+  dataRetentionDays: 7,        // 原始数据保留7天
+  queryCacheEnabled: true,     // 启用查询缓存
+  queryCacheTTL: 30,           // 实时查询缓存30秒
+  queryCacheHistoryTTL: 3600,  // 历史查询缓存1小时
+  queryCacheMaxEntries: 100,    // 内存缓存最大100条（无外部缓存时生效）
   getAuthenticate: type => {
     // type 为 'read' 或 'write'，返回认证信息
   }

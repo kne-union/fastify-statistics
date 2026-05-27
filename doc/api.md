@@ -7,7 +7,15 @@
 | name | string | `statistics` | 命名空间名称 |
 | collectFlushInterval | number | `5000` | 缓冲刷新间隔(ms) |
 | collectMaxBufferSize | number | `1000` | 缓冲区最大条数 |
-| cache | object | `null` | 缓存实例（提供时启用缓冲模式） |
+| collectMaxBufferOverflow | number | `maxBufferSize * 2` | 缓冲区溢出上限 |
+| cache | object | `null` | 缓存实例（提供时启用缓冲模式和查询缓存） |
+| compensationEnabled | boolean | `true` | 是否启用启动时自动补偿聚合 |
+| compensationBatchSize | number | `24` | 每次补偿聚合的最大窗口数 |
+| dataRetentionDays | number | `7` | 原始数据保留天数 |
+| queryCacheEnabled | boolean | `true` | 是否启用查询缓存 |
+| queryCacheTTL | number | `30` | 实时查询缓存TTL(秒) |
+| queryCacheHistoryTTL | number | `3600` | 历史查询缓存TTL(秒) |
+| queryCacheMaxEntries | number | `100` | 内存查询缓存最大条数（仅无外部缓存时生效） |
 | getAuthenticate | function | 抛出异常 | 鉴权函数，参数为 `'read'` 或 `'write'` |
 
 ### 数据采集
@@ -155,6 +163,25 @@
 | 最小 | min | 最小值 |
 | 最大 | max | 最大值 |
 
+### 补偿聚合机制
+
+插件启动时自动执行补偿聚合（可通过 `compensationEnabled: false` 关闭）。补偿逻辑基于 `aggregation-watermark` 表记录的各周期水位线（下一个待聚合时间），从水位线开始逐步向前聚合，直到追上当前时间。
+
+- 每次补偿最多处理 `compensationBatchSize` 个时间窗口
+- 上游周期未完成时，自动先补偿上游（如聚合 `d` 前先确保 `h` 已完成）
+- 每个周期有独立的补偿锁，防止并发补偿
+- 补偿聚合通过 Cron 定时触发，同时启动时也会执行一次
+
+### 查询缓存
+
+查询结果自动缓存，减少重复查询的数据库压力：
+
+- **无外部缓存**：使用内存 LRU 缓存，最大条数由 `queryCacheMaxEntries` 控制
+- **有外部缓存**（配置 `cache`）：查询结果存入外部缓存，支持 TTL 和版本校验
+- **版本校验**：缓存条目记录写入时的通道版本号，读取时校验版本是否变化，版本不匹配则缓存失效
+- **TTL 策略**：实时查询（endTime 在当前小时内）使用 `queryCacheTTL`（默认30秒），历史查询使用 `queryCacheHistoryTTL`（默认3600秒）
+- **补偿期间**：正在执行补偿聚合时，查询不走缓存，确保数据实时性
+
 ### 程序化 API
 
 通过 `fastify.statistics.services` 访问：
@@ -268,3 +295,14 @@ data: {"message":"错误信息"}
 **唯一约束**：`channel`
 
 **说明**：`channel-meta` 按 root channel（一级通道）唯一存储，一条元数据被所有以该 root channel 为前缀的子通道共享。首次采集某通道数据时，自动以其 root channel 创建元数据记录。`title` 和 `description` 从采集参数中提取，后续采集忽略（不更新）。`unit` 字段保留在 `data-record` 和 `period-stat` 表中。
+
+#### aggregation-watermark（聚合水位线）
+
+| 属性名 | 类型 | 说明 |
+|--------|------|------|
+| period | STRING | 统计周期(唯一键): h/d/w/m/q/y |
+| nextTime | DATE | 下一个待聚合时间 |
+
+**唯一约束**：`period`
+
+**说明**：水位线记录各周期下一次应聚合的时间起点，用于补偿聚合逻辑。首次聚合时，根据原始数据或上游周期统计的最早时间自动初始化。

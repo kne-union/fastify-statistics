@@ -1,6 +1,6 @@
 {
   "name": "@kne/fastify-statistics",
-  "version": "0.1.0-alpha.7",
+  "version": "0.1.0-alpha.8",
   "description": "基于 Fastify 的数据采集与多周期聚合统计插件，支持缓冲写入、时区查询和自动 Cron 聚合",
   "main": "index.js",
   "scripts": {
@@ -10,7 +10,12 @@
     "prettier": "prettier --config .prettierrc --write '{libs/**/*,index}.{js,jsx,ts,tsx,json,css,scss}'",
     "lint-staged": "npx lint-staged",
     "test": "mocha test/**/*.test.js",
-    "test:coverage": "nyc --reporter=html --reporter=text mocha test/**/*.test.js"
+    "test:coverage": "nyc --reporter=html --reporter=text mocha test/**/*.test.js",
+    "benchmark": "node benchmark/index.js",
+    "benchmark:collect": "node benchmark/index.js collect",
+    "benchmark:query": "node benchmark/index.js query",
+    "benchmark:aggregate": "node benchmark/index.js aggregate",
+    "benchmark:mixed": "node benchmark/index.js mixed"
   },
   "lint-staged": {
     "{libs/**/*,index}.{js,jsx,ts,tsx,json,css,scss}": [
