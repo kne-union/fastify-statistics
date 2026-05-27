@@ -45,6 +45,10 @@ module.exports = fp(
         ['services', path.resolve(__dirname, './libs/services')]
       ]
     });
+
+    fastify.addHook('onReady', async () => {
+      await fastify[options.name].services.periodStat.init();
+    });
   },
   {
     name: 'fastify-statistics',

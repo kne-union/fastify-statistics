@@ -9,7 +9,8 @@
  */
 const dayjs = require('dayjs');
 const {
-  createRealFastify, seedDataRecords, seedPeriodStats, ensureChannelMetas,
+  createRealFastify, createCronFastify, setWatermark,
+  seedDataRecords, seedPeriodStats, ensureChannelMetas,
   measure, formatStatsHeader, formatStats, memorySnapshot, formatMemoryDelta,
   createResultCollector, getResultFilePath
 } = require('./helpers');
@@ -128,7 +129,7 @@ async function run() {
     console.log('\n--- 4a. 小窗口补偿 (h 周期, 从 dataRecord) ---');
 
     for (const windowCount of windowCounts) {
-      const { fastify, cleanup } = await createRealFastify();
+      const { fastify, cleanup, createdJobs } = await createCronFastify({ pluginOptions: { compensationBatchSize: 100 } });
       const now = dayjs().startOf('hour').toDate();
       const pastStart = dayjs(now).subtract(windowCount, 'hour').toDate();
       const channels = ['sensor'];
@@ -143,29 +144,13 @@ async function run() {
       });
 
       // 设置 watermark 到 pastStart（需要补偿 windowCount 个窗口）
-      await fastify.statistics.models.aggregationWatermark.upsert({
-        period: 'h', nextTime: pastStart
-      });
-
-      // 通过 cron onTick 触发 compensate
-      const createdJobs = [];
-      fastify.decorate('cron', {
-        createJob: (jobConfig) => { createdJobs.push(jobConfig); }
-      });
-
-      // 重新注册 periodStat 服务（带 cron）
-      const fp = require('fastify-plugin');
-      await fp(require('../libs/services/period-stat'))(fastify, {
-        name: 'statistics', compensationEnabled: false, compensationBatchSize: 100
-      });
+      await setWatermark(fastify, 'h', pastStart);
 
       const hJob = createdJobs.find(j => j.name === 'statistics-period-stat-h');
 
       const stats = await measure(async () => {
         // 重置 watermark
-        await fastify.statistics.models.aggregationWatermark.upsert({
-          period: 'h', nextTime: pastStart
-        });
+        await setWatermark(fastify, 'h', pastStart);
         await hJob.onTick();
       }, { iterations: 10, warmup: 2 });
 
@@ -181,7 +166,7 @@ async function run() {
     console.log('\n--- 4b. 大批量补偿 (h 周期, compensationBatchSize 变化) ---');
 
     for (const batchSize of batchSizes) {
-      const { fastify, cleanup } = await createRealFastify();
+      const { fastify, cleanup, createdJobs } = await createCronFastify({ pluginOptions: { compensationBatchSize: batchSize } });
       const now = dayjs().startOf('hour').toDate();
       const dayAgo = dayjs(now).subtract(24, 'hour').toDate();
       const channels = ['sensor'];
@@ -193,19 +178,7 @@ async function run() {
         startTime: dayAgo, endTime: now
       });
 
-      await fastify.statistics.models.aggregationWatermark.upsert({
-        period: 'h', nextTime: dayAgo
-      });
-
-      const createdJobs = [];
-      fastify.decorate('cron', {
-        createJob: (jobConfig) => { createdJobs.push(jobConfig); }
-      });
-
-      const fp = require('fastify-plugin');
-      await fp(require('../libs/services/period-stat'))(fastify, {
-        name: 'statistics', compensationEnabled: false, compensationBatchSize: batchSize
-      });
+      await setWatermark(fastify, 'h', dayAgo);
 
       const hJob = createdJobs.find(j => j.name === 'statistics-period-stat-h');
 
@@ -224,7 +197,7 @@ async function run() {
   {
     console.log('\n--- 4c. 级联补偿 (d → h) ---');
 
-    const { fastify, cleanup } = await createRealFastify();
+    const { fastify, cleanup, createdJobs } = await createCronFastify({ pluginOptions: { compensationBatchSize: 100 } });
     const now = dayjs().startOf('day').toDate();
     const dayAgo = dayjs(now).subtract(1, 'day').toDate();
     const channels = ['sensor'];
@@ -236,24 +209,9 @@ async function run() {
       startTime: dayAgo, endTime: now
     });
 
-    // d 的 watermark 在过去
-    await fastify.statistics.models.aggregationWatermark.upsert({
-      period: 'd', nextTime: dayAgo
-    });
-    // h 的 watermark 也在过去，需要先补偿 h
-    await fastify.statistics.models.aggregationWatermark.upsert({
-      period: 'h', nextTime: dayAgo
-    });
-
-    const createdJobs = [];
-    fastify.decorate('cron', {
-      createJob: (jobConfig) => { createdJobs.push(jobConfig); }
-    });
-
-    const fp = require('fastify-plugin');
-    await fp(require('../libs/services/period-stat'))(fastify, {
-      name: 'statistics', compensationEnabled: false, compensationBatchSize: 100
-    });
+    // d 和 h 的 watermark 都在过去
+    await setWatermark(fastify, 'd', dayAgo);
+    await setWatermark(fastify, 'h', dayAgo);
 
     const dJob = createdJobs.find(j => j.name === 'statistics-period-stat-d');
 

@@ -184,51 +184,64 @@ module.exports = fp(async (fastify, options) => {
   };
 
   const aggregateFromDataRecord = async (period, startTime, endTime) => {
-    const results = await models.dataRecord.findAll({
-      attributes: ['channel', 'attributeName', [fn('MAX', col('unit')), 'unit'], ...AGGREGATE_TYPES.map(({ key, fn: aggFn }) => [fn(aggFn, col('data')), key])],
-      where: {
-        time: { [Op.between]: [startTime, endTime] }
-      },
-      group: ['channel', 'attributeName'],
-      raw: true
-    });
+    const transaction = await sequelize.transaction();
+    try {
+      // 使用 [startTime, endTime) 左闭右开区间，endTime 是下一窗口起始，不应包含
+      const timeRange = { [Op.gte]: startTime, [Op.lt]: endTime };
 
-    const records = [];
-    for (const row of results) {
-      for (const { key } of AGGREGATE_TYPES) {
-        const value = row[key];
-        if (value === null || value === undefined) continue;
-        records.push({
-          period,
-          time: startTime,
-          channel: row.channel,
-          attributeName: row.attributeName,
-          aggregate: key,
-          data: parseFloat(value),
-          unit: row.unit
-        });
+      const results = await models.dataRecord.findAll({
+        attributes: ['channel', 'attributeName', [fn('MAX', col('unit')), 'unit'], ...AGGREGATE_TYPES.map(({ key, fn: aggFn }) => [fn(aggFn, col('data')), key])],
+        where: {
+          time: timeRange
+        },
+        group: ['channel', 'attributeName'],
+        raw: true,
+        transaction
+      });
+
+      const records = [];
+      for (const row of results) {
+        for (const { key } of AGGREGATE_TYPES) {
+          const value = row[key];
+          if (value === null || value === undefined) continue;
+          records.push({
+            period,
+            time: startTime,
+            channel: row.channel,
+            attributeName: row.attributeName,
+            aggregate: key,
+            data: parseFloat(value),
+            unit: row.unit
+          });
+        }
       }
-    }
 
-    if (records.length > 0) {
-      const transaction = await sequelize.transaction();
-      try {
+      if (records.length > 0) {
         await models.periodStat.bulkCreate(records, { transaction, updateOnDuplicate: UPSERT_FIELDS });
-        await transaction.commit();
-      } catch (e) {
-        await transaction.rollback();
-        throw e;
       }
-    }
 
-    return records;
+      // 聚合完成后删除已聚合的源数据
+      await models.dataRecord.destroy({
+        where: {
+          time: timeRange
+        },
+        transaction
+      });
+
+      await transaction.commit();
+      return records;
+    } catch (e) {
+      await transaction.rollback();
+      throw e;
+    }
   };
 
   const aggregateFromPeriodStat = async (period, fromPeriod, startTime, endTime) => {
+    // 使用 [startTime, endTime) 左闭右开区间，endTime 是下一窗口起始，不应包含
     const rows = await models.periodStat.findAll({
       where: {
         period: fromPeriod,
-        time: { [Op.between]: [startTime, endTime] }
+        time: { [Op.gte]: startTime, [Op.lt]: endTime }
       },
       raw: true
     });
@@ -249,10 +262,10 @@ module.exports = fp(async (fastify, options) => {
     const records = [];
     for (const group of Object.values(grouped)) {
       const items = group.items;
-      const sums = items.filter(i => i.aggregate === 'sum').map(i => i.data);
-      const counts = items.filter(i => i.aggregate === 'count').map(i => i.data);
-      const mins = items.filter(i => i.aggregate === 'min').map(i => i.data);
-      const maxs = items.filter(i => i.aggregate === 'max').map(i => i.data);
+      const sums = items.filter(i => i.aggregate === 'sum').map(i => parseFloat(i.data));
+      const counts = items.filter(i => i.aggregate === 'count').map(i => parseFloat(i.data));
+      const mins = items.filter(i => i.aggregate === 'min').map(i => parseFloat(i.data));
+      const maxs = items.filter(i => i.aggregate === 'max').map(i => parseFloat(i.data));
 
       const base = {
         period,
@@ -329,53 +342,59 @@ module.exports = fp(async (fastify, options) => {
   };
 
   const setWatermark = async (period, nextTime) => {
-    await models.aggregationWatermark.upsert({ period, nextTime });
+    const existing = await models.aggregationWatermark.findOne({ where: { period } });
+    if (existing) {
+      await existing.update({ nextTime });
+    } else {
+      await models.aggregationWatermark.create({ period, nextTime });
+    }
   };
 
-  const initWatermark = async period => {
+  const determineStartFromSource = async period => {
     const config = PERIOD_CONFIG[period];
     const dependency = PERIOD_DEPENDENCY[period];
 
-    const existing = await getWatermark(period);
-    if (existing) return existing;
-
-    let minTime = null;
     if (dependency.source === 'data-record') {
+      // h 周期：从 data-record 的最早记录开始
       const row = await models.dataRecord.findOne({
         attributes: [[fn('MIN', col('time')), 'minTime']],
         raw: true
       });
-      minTime = row?.minTime;
-    } else {
-      const row = await models.periodStat.findOne({
-        attributes: [[fn('MIN', col('time')), 'minTime']],
-        where: { period: dependency.fromPeriod },
-        raw: true
-      });
-      minTime = row?.minTime;
+      return row?.minTime ? config.truncateTime(new Date(row.minTime)) : null;
     }
 
-    const nextTime = minTime ? config.truncateTime(new Date(minTime)) : config.truncateTime(new Date());
-    await setWatermark(period, nextTime);
-    return nextTime;
+    // 其他周期：从上游 period-stat 已有数据的最小时间截断到当前周期开始
+    // 使用 MIN 而非 MAX+nextStart，确保所有上游数据都被聚合到当前周期
+    const row = await models.periodStat.findOne({
+      attributes: [[fn('MIN', col('time')), 'minTime']],
+      where: { period: dependency.fromPeriod },
+      raw: true
+    });
+    return row?.minTime ? config.truncateTime(new Date(row.minTime)) : null;
   };
 
   const compensatingLocks = {};
   let startupCompensating = false;
+  let initialized = false;
   const isCompensating = () => startupCompensating || Object.values(compensatingLocks).some(v => v);
 
-  const compensate = async period => {
+  const compensate = async (period, { maxWindows } = {}) => {
     if (compensatingLocks[period]) return;
     compensatingLocks[period] = true;
     try {
       const config = PERIOD_CONFIG[period];
       const dependency = PERIOD_DEPENDENCY[period];
 
-      let nextTime = await initWatermark(period);
+      const watermark = await getWatermark(period);
+      if (!watermark) return;
+      let nextTime = new Date(watermark);
       const nowTruncated = config.truncateTime(new Date());
 
+      const windowLimit = maxWindows ?? compensationBatchSize;
       let count = 0;
-      while (nextTime < nowTruncated && count < compensationBatchSize) {
+      let failCount = 0;
+      const maxFailCount = options.maxCompensationFailCount ?? 3;
+      while (nextTime < nowTruncated && count < windowLimit && failCount < maxFailCount) {
         const endTime = config.getNextStart(nextTime);
 
         if (dependency.source === 'period-stat') {
@@ -387,17 +406,23 @@ module.exports = fp(async (fastify, options) => {
 
         try {
           await aggregate(period, { startTime: nextTime, endTime });
+          nextTime = endTime;
+          await setWatermark(period, nextTime);
+          count++;
+          failCount = 0;
         } catch (e) {
-          fastify.log.error(`Failed to compensate period ${period} [${nextTime.toISOString()} - ${endTime.toISOString()}]: ${e.message}`);
-          break;
+          failCount++;
+          fastify.log.error(`Failed to compensate period ${period} [${nextTime.toISOString()} - ${endTime.toISOString()}] (${failCount}/${maxFailCount}): ${e.message}`);
+          // 跳过失败窗口，推进水位线，避免无限重试同一窗口
+          nextTime = endTime;
+          await setWatermark(period, nextTime);
+          count++;
         }
-
-        nextTime = endTime;
-        await setWatermark(period, nextTime);
-        count++;
       }
 
-      if (nextTime < nowTruncated) {
+      if (failCount >= maxFailCount && nextTime < nowTruncated) {
+        fastify.log.error(`period=${period} 补偿连续失败 ${maxFailCount} 次，停止补偿，下次 cron 继续`);
+      } else if (nextTime < nowTruncated) {
         fastify.log.warn(`period=${period} 补偿未完成，已补 ${count} 个窗口，下次继续`);
       } else if (count > 1) {
         fastify.log.info(`period=${period} 补偿完成，共补 ${count} 个窗口`);
@@ -407,37 +432,159 @@ module.exports = fp(async (fastify, options) => {
     }
   };
 
-  if (options.compensationEnabled !== false) {
-    startupCompensating = true;
-    (async () => {
-      try {
-        for (const period of PERIOD_ORDER) {
-          await compensate(period);
-        }
-      } catch (e) {
-        fastify.log.error(`Startup compensation failed: ${e.message}`);
-      } finally {
-        startupCompensating = false;
-      }
-    })();
-  }
+  // period-stat 数据保留策略：h 保留当月，d/w 保留当年，m/q/y 永久保留
+  const cleanupOldPeriodStats = async () => {
+    const now = dayjs();
 
-  if (fastify.cron) {
-    for (const [period, config] of Object.entries(PERIOD_CONFIG)) {
+    // h: 保留当月，需确保 d 已聚合（检查 d 水位线）
+    const dWatermark = await getWatermark('d');
+    const hCutoff = now.startOf('month').toDate();
+    const hSafeCutoff = dWatermark && new Date(dWatermark) < hCutoff ? new Date(dWatermark) : hCutoff;
+    const hCount = await models.periodStat.destroy({
+      where: { period: 'h', time: { [Op.lt]: hSafeCutoff } }
+    });
+    if (hCount > 0) {
+      fastify.log.info(`Cleaned up ${hCount} old period-stat records for period=h before ${hSafeCutoff.toISOString()}`);
+    }
+
+    // d: 保留当年，需确保 w/m 已聚合（检查 w、m 水位线）
+    const wWatermark = await getWatermark('w');
+    const mWatermark = await getWatermark('m');
+    let dSafeCutoff = now.startOf('year').toDate();
+    if (wWatermark && new Date(wWatermark) < dSafeCutoff) dSafeCutoff = new Date(wWatermark);
+    if (mWatermark && new Date(mWatermark) < dSafeCutoff) dSafeCutoff = new Date(mWatermark);
+    const dCount = await models.periodStat.destroy({
+      where: { period: 'd', time: { [Op.lt]: dSafeCutoff } }
+    });
+    if (dCount > 0) {
+      fastify.log.info(`Cleaned up ${dCount} old period-stat records for period=d before ${dSafeCutoff.toISOString()}`);
+    }
+
+    // w: 保留当年，无下游依赖
+    const wCutoff = now.startOf('year').toDate();
+    const wCount = await models.periodStat.destroy({
+      where: { period: 'w', time: { [Op.lt]: wCutoff } }
+    });
+    if (wCount > 0) {
+      fastify.log.info(`Cleaned up ${wCount} old period-stat records for period=w before ${wCutoff.toISOString()}`);
+    }
+  };
+
+  const init = async () => {
+    const maxCompensationWindows = options.maxCompensationWindows ?? Infinity;
+    const maxFailCount = options.maxCompensationFailCount ?? 3;
+    const compensationEnabled = options.compensationEnabled !== false;
+
+    startupCompensating = true;
+    try {
+      for (const period of PERIOD_ORDER) {
+        const config = PERIOD_CONFIG[period];
+        const nowTruncated = config.truncateTime(new Date());
+
+        // Step 1: 确定补偿起始点
+        let startTime;
+        const existing = await getWatermark(period);
+
+        if (existing && new Date(existing) < nowTruncated) {
+          // 场景一：水位线存在但过期
+          startTime = new Date(existing);
+          fastify.log.info(`period=${period} 水位线过期 (${existing}), 从 ${startTime.toISOString()} 开始补偿`);
+        } else if (existing) {
+          // 水位线已是最新的，跳过
+          fastify.log.info(`period=${period} 水位线正常: ${existing}`);
+          continue;
+        } else {
+          // 场景二：水位线不存在，从源数据推断
+          startTime = await determineStartFromSource(period);
+          if (!startTime) {
+            // 场景三：全新系统，无任何数据
+            await setWatermark(period, nowTruncated);
+            fastify.log.info(`period=${period} 全新系统，水位线设为 ${nowTruncated.toISOString()}`);
+            continue;
+          }
+          fastify.log.info(`period=${period} 水位线不存在，从源数据推断起始点 ${startTime.toISOString()}`);
+        }
+
+        if (!compensationEnabled) {
+          // 补偿未启用，仅设置水位线到起始点，不执行补偿
+          await setWatermark(period, startTime);
+          fastify.log.info(`period=${period} 补偿未启用，水位线设为 ${startTime.toISOString()}`);
+          continue;
+        }
+
+        // Step 2: 执行补偿聚合，逐窗口推进水位线
+        let nextTime = startTime;
+        let count = 0;
+        let failCount = 0;
+
+        while (nextTime < nowTruncated && count < maxCompensationWindows) {
+          const endTime = config.getNextStart(nextTime);
+
+          try {
+            await aggregate(period, { startTime: nextTime, endTime });
+            count++;
+            failCount = 0;
+          } catch (e) {
+            failCount++;
+            fastify.log.error(`period=${period} 补偿失败 [${nextTime.toISOString()}] (${failCount}/${maxFailCount}): ${e.message}`);
+            if (failCount >= maxFailCount) {
+              fastify.log.error(`period=${period} 连续失败 ${maxFailCount} 次，停止补偿`);
+              break;
+            }
+          }
+
+          nextTime = endTime;
+          // 逐窗口推进水位线，确保水位线与实际聚合进度一致
+          await setWatermark(period, nextTime);
+        }
+
+        if (nextTime < nowTruncated) {
+          fastify.log.warn(`period=${period} 补偿未完成（到 ${nextTime.toISOString()}），下次 cron 继续`);
+        } else {
+          fastify.log.info(`period=${period} 补偿完成，共 ${count} 个窗口`);
+        }
+      }
+
+      fastify.log.info('Startup compensation finished');
+    } catch (e) {
+      fastify.log.error(`Startup compensation failed: ${e.message}`);
+    } finally {
+      startupCompensating = false;
+    }
+
+    if (fastify.cron) {
+      for (const [period, config] of Object.entries(PERIOD_CONFIG)) {
+        fastify.cron.createJob({
+          name: `statistics-period-stat-${period}`,
+          cronTime: config.cronTime,
+          onTick: async () => {
+            try {
+              await compensate(period);
+            } catch (e) {
+              fastify.log.error(`Failed to compensate period ${period}: ${e.message}`);
+            }
+          },
+          startWhenReady: true
+        });
+      }
+
       fastify.cron.createJob({
-        name: `statistics-period-stat-${period}`,
-        cronTime: config.cronTime,
+        name: 'statistics-period-stat-cleanup',
+        cronTime: '0 3 * * *',
         onTick: async () => {
           try {
-            await compensate(period);
+            await cleanupOldPeriodStats();
           } catch (e) {
-            fastify.log.error(`Failed to compensate period ${period}: ${e.message}`);
+            fastify.log.error(`Failed to cleanup old period-stat records: ${e.message}`);
           }
         },
         startWhenReady: true
       });
     }
-  }
+
+    initialized = true;
+    fastify.log.info('Period statistics service initialized');
+  };
 
   const formatGroupData = items => {
     const aggSet = new Set();
@@ -532,6 +679,10 @@ module.exports = fp(async (fastify, options) => {
       }
     }
 
+    if (!initialized) {
+      throw new Error('Period statistics service is not initialized yet');
+    }
+
     const channelList = Array.isArray(channels) ? channels : channels ? [channels] : [];
     const now = tz ? dayjs().tz(tz) : dayjs();
     const currentHourStart = now.startOf('hour').toDate();
@@ -556,7 +707,7 @@ module.exports = fp(async (fastify, options) => {
 
       const result = await doQuery({ channelList, startTime, endTime, attributeNames, aggregateList, tz, includeChildren, currentHourStart, isRealtime });
       const ttl = isRealtime ? queryCacheTTL : queryCacheHistoryTTL;
-      await queryCacheSet(cacheKey, result, ttl, isRealtime ? channelList : null);
+      await queryCacheSet(cacheKey, result, ttl, channelList);
       return result;
     }
 
@@ -676,13 +827,71 @@ module.exports = fp(async (fastify, options) => {
     return { channelMetas, list };
   };
 
+  /**
+   * 重置指定周期的 period-stat 数据和水位线
+   * 用于修复错误聚合数据：删除旧数据 → 重置水位线 → 重新补偿聚合
+   * @param {string} period - 周期类型
+   * @param {object} [options]
+   * @param {Date} [options.startTime] - 重置起始时间（水位线将设为此值），默认为当前截断时间
+   * @param {Date} [options.endTime] - 重置结束时间（仅删除此范围内的 period-stat 数据），默认删除全部
+   * @param {boolean} [options.cascade=false] - 是否级联重置下游周期（如重置 h 时同时重置依赖 h 的 d）
+   * @returns {{ period, deletedCount, nextTime }}
+   */
+  const resetPeriodStats = async (period, { startTime, endTime, cascade = false } = {}) => {
+    const config = PERIOD_CONFIG[period];
+    if (!config) {
+      throw new Error(`Unsupported period: ${period}, supported: ${Object.keys(PERIOD_CONFIG).join(',')}`);
+    }
+
+    const where = { period };
+    if (startTime && endTime) {
+      where.time = { [Op.between]: [startTime, endTime] };
+    } else if (startTime) {
+      where.time = { [Op.gte]: startTime };
+    } else if (endTime) {
+      where.time = { [Op.lte]: endTime };
+    }
+
+    const deletedCount = await models.periodStat.destroy({ where });
+
+    // 重置水位线
+    const nextTime = startTime || config.truncateTime(new Date());
+    await setWatermark(period, nextTime);
+
+    // 使查询缓存失效
+    invalidateQueryCache();
+
+    const result = { period, deletedCount, nextTime };
+
+    // 级联重置下游周期
+    if (cascade) {
+      const downstreamPeriods = Object.entries(PERIOD_DEPENDENCY)
+        .filter(([, dep]) => dep.source === 'period-stat' && dep.fromPeriod === period)
+        .map(([p]) => p);
+
+      for (const dp of downstreamPeriods) {
+        const subResult = await resetPeriodStats(dp, {
+          startTime: startTime ? PERIOD_CONFIG[dp].truncateTime(startTime) : undefined,
+          endTime: endTime ? PERIOD_CONFIG[dp].truncateTime(endTime) : undefined,
+          cascade: true
+        });
+        result[`cascade_${dp}`] = subResult;
+      }
+    }
+
+    return result;
+  };
+
   Object.assign(fastify[options.name].services, {
     query,
     periodStat: {
+      init,
       aggregate,
       query,
       isCompensating,
-      invalidateQueryCache
+      invalidateQueryCache,
+      cleanupOldPeriodStats,
+      resetPeriodStats
     }
   });
 });

@@ -63,6 +63,10 @@ async function createRealFastify({ dbPath, pluginOptions = {} } = {}) {
     ]
   });
 
+  // 初始化 periodStat 服务（必须在 ready 之后调用 init）
+  await fastify.ready();
+  await fastify.statistics.services.periodStat.init();
+
   const cleanup = async () => {
     await fastify.close();
     try { fs.unlinkSync(dbPath); } catch (e) { /* ignore */ }
@@ -421,8 +425,105 @@ function printSummaryReport(scenarioKeys) {
   }
 }
 
+/**
+ * 创建带 cron 支持的 Fastify 实例（用于 compensate 基准测试）
+ * cron 任务被收集到 createdJobs 数组，便于手动触发 onTick
+ * @param {object} [options]
+ * @param {string} [options.dbPath] - SQLite 文件路径
+ * @param {object} [options.pluginOptions] - 传给 services 的选项
+ * @returns {Promise<{fastify, dbPath, cleanup, createdJobs}>}
+ */
+async function createCronFastify({ dbPath, pluginOptions = {} } = {}) {
+  if (!dbPath) {
+    dbPath = path.join(os.tmpdir(), `benchmark-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  }
+
+  const fastify = require('fastify')({ logger: false });
+
+  // 注册 sequelize
+  await fastify.register(require('@kne/fastify-sequelize'), {
+    db: {
+      dialect: 'sqlite',
+      storage: dbPath,
+      logging: false,
+      dialectOptions: {
+        mode: require('sqlite3').OPEN_READWRITE | require('sqlite3').OPEN_CREATE
+      }
+    },
+    syncOptions: { alter: true }
+  });
+
+  // 加载模型
+  const models = await fastify.sequelize.addModels(
+    path.resolve(__dirname, '../libs/models'),
+    { prefix: 't_', modelPrefix: 'statistics' }
+  );
+
+  // 同步数据库
+  await fastify.sequelize.sync();
+
+  // 启用 WAL 模式
+  const seqInstance = fastify.sequelize.instance;
+  await seqInstance.query('PRAGMA journal_mode=WAL');
+  await seqInstance.query('PRAGMA busy_timeout=5000');
+
+  // 收集 cron jobs
+  const createdJobs = [];
+
+  // 注册 namespace + services（带 cron 收集器）
+  await fastify.register(require('@kne/fastify-namespace'), {
+    options: Object.assign({
+      prefix: '/api/statistics',
+      dbTableNamePrefix: 't_',
+      name: 'statistics',
+      compensationEnabled: false,
+      queryCacheEnabled: true,
+      dataRetentionDays: 365
+    }, pluginOptions),
+    name: 'statistics',
+    modules: [
+      ['models', models],
+      ['services', path.resolve(__dirname, '../libs/services')]
+    ]
+  });
+
+  // 注册 cron 收集器（必须在 namespace 之后，因为 periodStat init() 会检查 fastify.cron）
+  fastify.decorate('cron', {
+    createJob: (jobConfig) => { createdJobs.push(jobConfig); }
+  });
+
+  // 初始化 periodStat 服务
+  await fastify.ready();
+  await fastify.statistics.services.periodStat.init();
+
+  const cleanup = async () => {
+    await fastify.close();
+    try { fs.unlinkSync(dbPath); } catch (e) { /* ignore */ }
+  };
+
+  return { fastify, dbPath, cleanup, createdJobs };
+}
+
+/**
+ * 设置指定周期的 watermark（兼容 findOne+update/create 模式）
+ * @param {object} fastify
+ * @param {string} period
+ * @param {Date} nextTime
+ */
+async function setWatermark(fastify, period, nextTime) {
+  const models = fastify.statistics.models;
+  const existing = await models.aggregationWatermark.findOne({ where: { period } });
+  if (existing) {
+    await existing.update({ nextTime });
+  } else {
+    await models.aggregationWatermark.create({ period, nextTime });
+  }
+}
+
 module.exports = {
   createRealFastify,
+  createCronFastify,
+  setWatermark,
   seedDataRecords,
   seedPeriodStats,
   ensureChannelMetas,
