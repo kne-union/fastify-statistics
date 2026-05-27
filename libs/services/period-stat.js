@@ -11,25 +11,29 @@ const PERIOD_CONFIG = {
     label: '时',
     cronTime: '1 * * * *',
     truncateTime: date => dayjs(date).startOf('hour').toDate(),
-    getPrevStart: endTime => dayjs(endTime).subtract(1, 'hour').toDate()
+    getPrevStart: endTime => dayjs(endTime).subtract(1, 'hour').toDate(),
+    getNextStart: startTime => dayjs(startTime).add(1, 'hour').toDate()
   },
   d: {
     label: '日',
     cronTime: '1 0 * * *',
     truncateTime: date => dayjs(date).startOf('day').toDate(),
-    getPrevStart: endTime => dayjs(endTime).subtract(1, 'day').toDate()
+    getPrevStart: endTime => dayjs(endTime).subtract(1, 'day').toDate(),
+    getNextStart: startTime => dayjs(startTime).add(1, 'day').toDate()
   },
   w: {
     label: '周',
     cronTime: '1 0 * * 1',
     truncateTime: date => dayjs(date).startOf('week').add(1, 'day').startOf('day').toDate(),
-    getPrevStart: endTime => dayjs(endTime).subtract(7, 'day').toDate()
+    getPrevStart: endTime => dayjs(endTime).subtract(7, 'day').toDate(),
+    getNextStart: startTime => dayjs(startTime).add(7, 'day').toDate()
   },
   m: {
     label: '月',
     cronTime: '1 0 1 * *',
     truncateTime: date => dayjs(date).startOf('month').toDate(),
-    getPrevStart: endTime => dayjs(endTime).subtract(1, 'month').startOf('month').toDate()
+    getPrevStart: endTime => dayjs(endTime).subtract(1, 'month').startOf('month').toDate(),
+    getNextStart: startTime => dayjs(startTime).add(1, 'month').startOf('month').toDate()
   },
   q: {
     label: '季',
@@ -41,13 +45,15 @@ const PERIOD_CONFIG = {
         .startOf('month')
         .toDate();
     },
-    getPrevStart: endTime => dayjs(endTime).subtract(3, 'month').startOf('month').toDate()
+    getPrevStart: endTime => dayjs(endTime).subtract(3, 'month').startOf('month').toDate(),
+    getNextStart: startTime => dayjs(startTime).add(3, 'month').startOf('month').toDate()
   },
   y: {
     label: '年',
     cronTime: '1 0 1 1 *',
     truncateTime: date => dayjs(date).startOf('year').toDate(),
-    getPrevStart: endTime => dayjs(endTime).subtract(1, 'year').startOf('year').toDate()
+    getPrevStart: endTime => dayjs(endTime).subtract(1, 'year').startOf('year').toDate(),
+    getNextStart: startTime => dayjs(startTime).add(1, 'year').startOf('year').toDate()
   }
 };
 
@@ -69,11 +75,113 @@ const AGGREGATE_TYPES = [
 ];
 
 const UPSERT_FIELDS = ['data', 'unit'];
+const escapeLike = str => str.replace(/[%_\\]/g, '\\$&');
+
+const createHashKey = obj => {
+  const sorted = Object.keys(obj)
+    .sort()
+    .reduce((acc, key) => {
+      const val = obj[key];
+      acc[key] = Array.isArray(val) ? [...val].sort() : val;
+      return acc;
+    }, {});
+  return JSON.stringify(sorted);
+};
 
 module.exports = fp(async (fastify, options) => {
   const { models } = fastify[options.name];
   const { Op, fn, col } = fastify.sequelize.Sequelize;
   const sequelize = fastify.sequelize.instance;
+
+  const externalCache = options.cache ?? null;
+  const queryCacheEnabled = options.queryCacheEnabled !== false;
+  const queryCacheTTL = options.queryCacheTTL ?? 30;
+  const queryCacheHistoryTTL = options.queryCacheHistoryTTL ?? 3600;
+  const queryCacheMaxEntries = options.queryCacheMaxEntries ?? 100;
+
+  const QUERY_CACHE_PREFIX = `${options.name || 'statistics'}:query:`;
+  let globalVersion = 0;
+  const channelVersions = new Map();
+
+  const getChannelVersion = ch => channelVersions.get(ch) || 0;
+
+  const memoryCacheStore = externalCache ? null : new Map();
+  const queryCacheGet = async key => {
+    if (externalCache) {
+      const payload = await externalCache.get(QUERY_CACHE_PREFIX + key);
+      if (!payload || typeof payload !== 'object' || !('value' in payload)) return null;
+      if (payload.channelVersions) {
+        if (payload.globalVersion !== undefined && payload.globalVersion !== globalVersion) {
+          return null;
+        }
+        for (const [ch, ver] of Object.entries(payload.channelVersions)) {
+          if (getChannelVersion(ch) !== ver) return null;
+        }
+      }
+      return payload.value;
+    }
+    const entry = memoryCacheStore.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expireAt) {
+      memoryCacheStore.delete(key);
+      return null;
+    }
+    // Version check before LRU promotion
+    if (entry.channelVersions) {
+      if (entry.globalVersion !== undefined && entry.globalVersion !== globalVersion) {
+        memoryCacheStore.delete(key);
+        return null;
+      }
+      for (const [ch, ver] of Object.entries(entry.channelVersions)) {
+        if (getChannelVersion(ch) !== ver) {
+          memoryCacheStore.delete(key);
+          return null;
+        }
+      }
+    }
+    // LRU: move to end on access
+    memoryCacheStore.delete(key);
+    memoryCacheStore.set(key, entry);
+    return entry.value;
+  };
+
+  const queryCacheSet = async (key, value, ttl, channelList) => {
+    if (externalCache) {
+      const payload = channelList ? { value, channelVersions: Object.fromEntries(channelList.map(ch => [ch, getChannelVersion(ch)])) } : { value };
+      if (channelList && channelList.length === 0) {
+        payload.globalVersion = globalVersion;
+      }
+      if (typeof externalCache.set === 'function' && externalCache.set.length >= 3) {
+        await externalCache.set(QUERY_CACHE_PREFIX + key, payload, ttl);
+      } else {
+        await externalCache.set(QUERY_CACHE_PREFIX + key, payload);
+      }
+      return;
+    }
+    if (memoryCacheStore.size >= queryCacheMaxEntries) {
+      const oldest = memoryCacheStore.keys().next().value;
+      memoryCacheStore.delete(oldest);
+    }
+    const entry = { value, expireAt: Date.now() + ttl * 1000 };
+    if (channelList) {
+      entry.channelVersions = Object.fromEntries(channelList.map(ch => [ch, getChannelVersion(ch)]));
+      if (channelList.length === 0) {
+        entry.globalVersion = globalVersion;
+      }
+    }
+    memoryCacheStore.set(key, entry);
+  };
+
+  const invalidateQueryCache = (channels = []) => {
+    globalVersion++;
+    for (const ch of channels) {
+      const parts = ch.split(':');
+      for (let i = parts.length; i >= 1; i--) {
+        const prefix = parts.slice(0, i).join(':');
+        channelVersions.set(prefix, (channelVersions.get(prefix) || 0) + 1);
+      }
+    }
+  };
 
   const aggregateFromDataRecord = async (period, startTime, endTime) => {
     const results = await models.dataRecord.findAll({
@@ -106,12 +214,6 @@ module.exports = fp(async (fastify, options) => {
       const transaction = await sequelize.transaction();
       try {
         await models.periodStat.bulkCreate(records, { transaction, updateOnDuplicate: UPSERT_FIELDS });
-        await models.dataRecord.destroy({
-          where: {
-            time: { [Op.between]: [startTime, endTime] }
-          },
-          transaction
-        });
         await transaction.commit();
       } catch (e) {
         await transaction.rollback();
@@ -160,17 +262,20 @@ module.exports = fp(async (fastify, options) => {
         unit: group.items[0]?.unit || null
       };
 
+      const sumTotal = sums.length > 0 ? sums.reduce((a, b) => a + b, 0) : 0;
+      const countTotal = counts.length > 0 ? counts.reduce((a, b) => a + b, 0) : 0;
+
       if (sums.length > 0) {
-        records.push({ ...base, aggregate: 'sum', data: sums.reduce((a, b) => a + b, 0) });
+        records.push({ ...base, aggregate: 'sum', data: sumTotal });
       }
       if (counts.length > 0) {
-        records.push({ ...base, aggregate: 'count', data: counts.reduce((a, b) => a + b, 0) });
+        records.push({ ...base, aggregate: 'count', data: countTotal });
       }
       if (sums.length > 0 && counts.length > 0) {
         records.push({
           ...base,
           aggregate: 'avg',
-          data: sums.reduce((a, b) => a + b, 0) / counts.reduce((a, b) => a + b, 0)
+          data: sumTotal / countTotal
         });
       }
       if (mins.length > 0) {
@@ -201,8 +306,8 @@ module.exports = fp(async (fastify, options) => {
       throw new Error(`Unsupported period: ${period}, supported: ${Object.keys(PERIOD_CONFIG).join(',')}`);
     }
 
-    const now = dayjs();
     if (!startTime || !endTime) {
+      const now = dayjs();
       endTime = config.truncateTime(now);
       startTime = config.getPrevStart(endTime);
     }
@@ -214,6 +319,109 @@ module.exports = fp(async (fastify, options) => {
     return aggregateFromPeriodStat(period, dependency.fromPeriod, startTime, endTime);
   };
 
+  const PERIOD_ORDER = ['h', 'd', 'w', 'm', 'q', 'y'];
+
+  const compensationBatchSize = options.compensationBatchSize ?? 24;
+
+  const getWatermark = async period => {
+    const row = await models.aggregationWatermark.findOne({ where: { period } });
+    return row ? row.nextTime : null;
+  };
+
+  const setWatermark = async (period, nextTime) => {
+    await models.aggregationWatermark.upsert({ period, nextTime });
+  };
+
+  const initWatermark = async period => {
+    const config = PERIOD_CONFIG[period];
+    const dependency = PERIOD_DEPENDENCY[period];
+
+    const existing = await getWatermark(period);
+    if (existing) return existing;
+
+    let minTime = null;
+    if (dependency.source === 'data-record') {
+      const row = await models.dataRecord.findOne({
+        attributes: [[fn('MIN', col('time')), 'minTime']],
+        raw: true
+      });
+      minTime = row?.minTime;
+    } else {
+      const row = await models.periodStat.findOne({
+        attributes: [[fn('MIN', col('time')), 'minTime']],
+        where: { period: dependency.fromPeriod },
+        raw: true
+      });
+      minTime = row?.minTime;
+    }
+
+    const nextTime = minTime ? config.truncateTime(new Date(minTime)) : config.truncateTime(new Date());
+    await setWatermark(period, nextTime);
+    return nextTime;
+  };
+
+  const compensatingLocks = {};
+  let startupCompensating = false;
+  const isCompensating = () => startupCompensating || Object.values(compensatingLocks).some(v => v);
+
+  const compensate = async period => {
+    if (compensatingLocks[period]) return;
+    compensatingLocks[period] = true;
+    try {
+      const config = PERIOD_CONFIG[period];
+      const dependency = PERIOD_DEPENDENCY[period];
+
+      let nextTime = await initWatermark(period);
+      const nowTruncated = config.truncateTime(new Date());
+
+      let count = 0;
+      while (nextTime < nowTruncated && count < compensationBatchSize) {
+        const endTime = config.getNextStart(nextTime);
+
+        if (dependency.source === 'period-stat') {
+          const upstreamNext = await getWatermark(dependency.fromPeriod);
+          if (!upstreamNext || new Date(upstreamNext) < new Date(endTime)) {
+            await compensate(dependency.fromPeriod);
+          }
+        }
+
+        try {
+          await aggregate(period, { startTime: nextTime, endTime });
+        } catch (e) {
+          fastify.log.error(`Failed to compensate period ${period} [${nextTime.toISOString()} - ${endTime.toISOString()}]: ${e.message}`);
+          break;
+        }
+
+        nextTime = endTime;
+        await setWatermark(period, nextTime);
+        count++;
+      }
+
+      if (nextTime < nowTruncated) {
+        fastify.log.warn(`period=${period} 补偿未完成，已补 ${count} 个窗口，下次继续`);
+      } else if (count > 1) {
+        fastify.log.info(`period=${period} 补偿完成，共补 ${count} 个窗口`);
+      }
+    } finally {
+      compensatingLocks[period] = false;
+    }
+  };
+
+  if (options.compensationEnabled !== false) {
+    startupCompensating = true;
+    (async () => {
+      try {
+        for (const period of PERIOD_ORDER) {
+          await compensate(period);
+        }
+      } catch (e) {
+        fastify.log.error(`Startup compensation failed: ${e.message}`);
+      } finally {
+        startupCompensating = false;
+      }
+    })();
+  }
+
   if (fastify.cron) {
     for (const [period, config] of Object.entries(PERIOD_CONFIG)) {
       fastify.cron.createJob({
@@ -221,9 +429,9 @@ module.exports = fp(async (fastify, options) => {
         cronTime: config.cronTime,
         onTick: async () => {
           try {
-            await aggregate(period);
+            await compensate(period);
           } catch (e) {
-            fastify.log.error(`Failed to aggregate period ${period}: ${e.message}`);
+            fastify.log.error(`Failed to compensate period ${period}: ${e.message}`);
           }
         },
         startWhenReady: true
@@ -231,7 +439,7 @@ module.exports = fp(async (fastify, options) => {
     }
   }
 
-  const formatGroupData = (items, hasAttributeNamesFilter) => {
+  const formatGroupData = items => {
     const aggSet = new Set();
     const unitMap = {};
     for (const item of items) {
@@ -325,12 +533,42 @@ module.exports = fp(async (fastify, options) => {
     }
 
     const channelList = Array.isArray(channels) ? channels : channels ? [channels] : [];
+    const now = tz ? dayjs().tz(tz) : dayjs();
+    const currentHourStart = now.startOf('hour').toDate();
+    const isRealtime = dayjs(endTime).isAfter(currentHourStart);
 
+    // Query cache
+    if (queryCacheEnabled && !isCompensating()) {
+      const cacheKey = createHashKey({
+        channels: channelList,
+        startTime: new Date(startTime).toISOString(),
+        endTime: new Date(endTime).toISOString(),
+        attributeNames: attributeNames || [],
+        aggregates: aggregateList,
+        timezone: tz || '',
+        includeChildren: !!includeChildren
+      });
+
+      const cached = await queryCacheGet(cacheKey);
+      if (cached !== null && cached !== undefined) {
+        return cached;
+      }
+
+      const result = await doQuery({ channelList, startTime, endTime, attributeNames, aggregateList, tz, includeChildren, currentHourStart, isRealtime });
+      const ttl = isRealtime ? queryCacheTTL : queryCacheHistoryTTL;
+      await queryCacheSet(cacheKey, result, ttl, isRealtime ? channelList : null);
+      return result;
+    }
+
+    return await doQuery({ channelList, startTime, endTime, attributeNames, aggregateList, tz, includeChildren, currentHourStart, isRealtime });
+  };
+
+  const doQuery = async ({ channelList, startTime, endTime, attributeNames, aggregateList, tz, includeChildren, currentHourStart, isRealtime }) => {
     const channelWhere =
       channelList.length > 0
         ? includeChildren
           ? {
-              [Op.or]: channelList.flatMap(ch => [{ channel: ch }, { channel: { [Op.like]: `${ch}:%` } }])
+              [Op.or]: channelList.flatMap(ch => [{ channel: ch }, { channel: { [Op.like]: `${escapeLike(ch)}:%` } }])
             }
           : { channel: { [Op.in]: channelList } }
         : {};
@@ -351,11 +589,9 @@ module.exports = fp(async (fastify, options) => {
     });
     allRecords.push(...records);
 
-    const now = tz ? dayjs().tz(tz) : dayjs();
-    const currentHourStart = now.startOf('hour').toDate();
     const endTimeDayjs = dayjs(endTime);
 
-    if (endTimeDayjs.isAfter(currentHourStart)) {
+    if (isRealtime) {
       const startTimeDayjs = dayjs(startTime);
       const drStartTime = startTimeDayjs.isAfter(currentHourStart) ? startTimeDayjs.toDate() : currentHourStart;
 
@@ -444,7 +680,9 @@ module.exports = fp(async (fastify, options) => {
     query,
     periodStat: {
       aggregate,
-      query
+      query,
+      isCompensating,
+      invalidateQueryCache
     }
   });
 });
