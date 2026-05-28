@@ -684,8 +684,9 @@ module.exports = fp(async (fastify, options) => {
     }
 
     const channelList = Array.isArray(channels) ? channels : channels ? [channels] : [];
-    const now = tz ? dayjs().tz(tz) : dayjs();
-    const currentHourStart = now.startOf('hour').toDate();
+    // 写入数据全使用服务器时间，isRealtime 和 currentHourStart 必须基于服务器时间判断
+    // 因为数据是按服务器时间分桶聚合的，客户端时区仅影响展示层的日期/小时转换
+    const currentHourStart = dayjs().startOf('hour').toDate();
     const isRealtime = dayjs(endTime).isAfter(currentHourStart);
 
     // Query cache

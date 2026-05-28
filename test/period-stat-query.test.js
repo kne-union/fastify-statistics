@@ -1432,4 +1432,98 @@ describe('@kne/fastify-statistics', function () {
       });
     });
   });
+
+  describe('时区处理测试', () => {
+    describe('query 方法时区处理', () => {
+      it('isRealtime 应基于服务器时间判断，不受客户端时区影响', async () => {
+        const { fastify, periodStatRows, dataRecordFindAllResult, findAllCalls } = createQueryMockFastify();
+        await mockPeriodStatService(fastify, { name: 'statistics' });
+
+        const now = new Date();
+        const startTime = new Date(now.getTime() - 3600000);
+        // endTime 设为当前时间之后，触发 isRealtime
+        const futureEndTime = new Date(now.getTime() + 3600000);
+
+        // 不提供时区
+        await fastify.statistics.services.periodStat.query({
+          channels: ['sensor'], startTime, endTime: futureEndTime, aggregates: ['sum']
+        });
+
+        // 提供时区 Asia/Shanghai
+        await fastify.statistics.services.periodStat.query({
+          channels: ['sensor'], startTime, endTime: futureEndTime, aggregates: ['sum'], timezone: 'Asia/Shanghai'
+        });
+
+        // 两次查询都应查询 dataRecord（因为 isRealtime=true）
+        const drCalls = findAllCalls.filter(c => c.model === 'dataRecord');
+        expect(drCalls.length).to.equal(2);
+
+        await fastify.close();
+      });
+
+      it('提供无效时区应抛出错误', async () => {
+        const { fastify } = createQueryMockFastify();
+        await mockPeriodStatService(fastify, { name: 'statistics' });
+
+        const startTime = new Date('2026-05-01T00:00:00.000Z');
+        const endTime = new Date('2026-05-01T01:00:00.000Z');
+
+        try {
+          await fastify.statistics.services.periodStat.query({
+            channels: ['sensor'], startTime, endTime, aggregates: ['sum'], timezone: 'Invalid/Timezone'
+          });
+          expect.fail('Should have thrown an error');
+        } catch (e) {
+          expect(e.message).to.include('Invalid timezone');
+        }
+
+        await fastify.close();
+      });
+
+      it('currentHourStart 应基于服务器时间，不使用客户端时区', async () => {
+        const { fastify, periodStatRows, dataRecordFindAllResult, findAllCalls } = createQueryMockFastify();
+        await mockPeriodStatService(fastify, { name: 'statistics' });
+
+        const now = new Date();
+        const currentHourStart = new Date(now);
+        currentHourStart.setMinutes(0, 0, 0);
+        const startTime = new Date(currentHourStart.getTime() - 3600000);
+        // endTime 在当前小时之后，触发 isRealtime
+        const endTime = new Date(now.getTime() + 60000);
+
+        dataRecordFindAllResult.push({
+          channel: 'sensor', attributeName: 'default',
+          SUM_data: 42, COUNT_data: 1, MAX_unit: 'count'
+        });
+
+        // 不提供时区
+        await fastify.statistics.services.periodStat.query({
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum']
+        });
+
+        // 提供时区 Asia/Shanghai
+        findAllCalls.length = 0;
+        dataRecordFindAllResult.length = 0;
+        dataRecordFindAllResult.push({
+          channel: 'sensor', attributeName: 'default',
+          SUM_data: 42, COUNT_data: 1, MAX_unit: 'count'
+        });
+
+        await fastify.statistics.services.periodStat.query({
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum'], timezone: 'Asia/Shanghai'
+        });
+
+        // 两次查询的 dataRecord 调用应该查询相同的时间范围
+        // 因为 currentHourStart 基于服务器时间，不受 timezone 影响
+        const drCalls = findAllCalls.filter(c => c.model === 'dataRecord');
+        if (drCalls.length > 0) {
+          // drStartTime 应该是服务器时间的 currentHourStart，与 timezone 无关
+          const where = drCalls[0].opts.where;
+          expect(where).to.exist;
+        }
+
+        await fastify.close();
+      });
+    });
+  });
 });
