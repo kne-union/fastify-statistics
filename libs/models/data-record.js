@@ -35,11 +35,23 @@ module.exports = ({ DataTypes, options }) => {
     options: {
       comment: '数据采集记录',
       indexes: [
-        { name: 'idx_data_record_channel', fields: ['channel'] },
-        { name: 'idx_data_record_time', fields: ['time'] },
-        { name: 'idx_data_record_channel_time', fields: ['channel', 'time'] },
-        { name: 'idx_data_record_channel_attr_time', fields: ['channel', 'attribute_name', 'time'] },
-        { name: 'idx_data_record_attr_name', fields: ['attribute_name'] }
+        {
+          name: `idx${options.modelPrefix || ''}_data_record_channel`,
+          fields: ['channel']
+        },
+        {
+          name: `idx${options.modelPrefix || ''}_data_record_time`,
+          fields: ['time']
+        },
+        {
+          name: `idx${options.modelPrefix || ''}_data_record_channel_time`,
+          fields: ['channel', 'time']
+        },
+        {
+          name: `idx${options.modelPrefix || ''}_data_record_channel_attr_time`,
+          fields: ['channel', 'attribute_name', 'time']
+        },
+        { name: `idx${options.modelPrefix || ''}_idx_data_record_attr_name`, fields: ['attribute_name'] }
       ]
     }
   };
