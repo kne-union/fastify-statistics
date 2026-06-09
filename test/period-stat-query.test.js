@@ -1,4 +1,5 @@
 const { expect } = require('chai');
+const dayjs = require('dayjs');
 const {
   mockPeriodStatService, createQueryMockFastify, createCacheTestMockFastify,
   createExternalCacheMockFastify, createFullMockFastify
@@ -160,7 +161,7 @@ describe('@kne/fastify-statistics', function () {
         await fastify.close();
       });
 
-      it('should query data from all period types in single query', async () => {
+      it('should query only non-overlapping period windows', async () => {
         const { fastify, periodStatRows, findAllCalls } = localCreateQueryMockFastify();
         await mockPeriodStatService(fastify, { name: 'statistics' });
 
@@ -178,11 +179,83 @@ describe('@kne/fastify-statistics', function () {
 
         const periodTypes = results.map(r => r.period);
         expect(periodTypes).to.include('h');
-        expect(periodTypes).to.include('d');
+        expect(periodTypes).to.not.include('d');
 
         const psCalls = findAllCalls.filter(c => c.model === 'periodStat');
         expect(psCalls.length).to.equal(1);
-        expect(psCalls[0].opts.where.period).to.deep.equal({ in: ['h', 'd', 'w', 'm', 'q', 'y'] });
+        expect(psCalls[0].opts.where.period).to.equal('h');
+
+        await fastify.close();
+      });
+
+      it('should use one monthly window for a complete natural month', async () => {
+        const { fastify, periodStatRows, findAllCalls } = localCreateQueryMockFastify();
+        await mockPeriodStatService(fastify, { name: 'statistics' });
+
+        const startTime = dayjs('2026-05-01').startOf('month').toDate();
+        const endTime = dayjs('2026-06-01').startOf('month').toDate();
+
+        periodStatRows.push(
+          { period: 'm', channel: 'sensor', attributeName: 'default', aggregate: 'sum', data: 31, time: startTime },
+          { period: 'd', channel: 'sensor', attributeName: 'default', aggregate: 'sum', data: 1, time: startTime },
+          { period: 'h', channel: 'sensor', attributeName: 'default', aggregate: 'sum', data: 1, time: startTime }
+        );
+
+        const { list: results } = await fastify.statistics.services.periodStat.query({
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum']
+        });
+
+        expect(results.length).to.equal(1);
+        expect(results[0].period).to.equal('m');
+        expect(results[0].time.getTime()).to.equal(startTime.getTime());
+        expect(results[0].data).to.deep.equal({ default: 31 });
+
+        const psCalls = findAllCalls.filter(c => c.model === 'periodStat');
+        expect(psCalls.length).to.equal(1);
+        expect(psCalls[0].opts.where.period).to.equal('m');
+        expect(psCalls[0].opts.where.time.in.map(d => d.toISOString())).to.deep.equal([startTime.toISOString()]);
+
+        await fastify.close();
+      });
+
+      it('should compose non-overlapping large and small windows for a partial month range', async () => {
+        const { fastify, periodStatRows, findAllCalls } = localCreateQueryMockFastify();
+        await mockPeriodStatService(fastify, { name: 'statistics' });
+
+        const startTime = dayjs('2026-05-15').startOf('day').toDate();
+        const endTime = dayjs('2026-06-09').startOf('day').toDate();
+
+        const localDay = value => dayjs(value).startOf('day').toDate();
+        const windowKey = (period, value) => `${period}:${localDay(value).toISOString()}`;
+        const addRow = (period, value, data) => {
+          periodStatRows.push({ period, channel: 'sensor', attributeName: 'default', aggregate: 'sum', data, time: localDay(value) });
+        };
+        addRow('d', '2026-05-15', 1);
+        addRow('d', '2026-05-16', 1);
+        addRow('d', '2026-05-17', 1);
+        addRow('w', '2026-05-18', 7);
+        addRow('w', '2026-05-25', 7);
+        addRow('w', '2026-06-01', 7);
+        addRow('d', '2026-06-08', 1);
+        addRow('m', '2026-06-01', 30);
+        addRow('h', '2026-05-15', 1);
+
+        const { list: results } = await fastify.statistics.services.periodStat.query({
+          channels: ['sensor'], startTime, endTime, aggregates: ['sum']
+        });
+
+        expect(results.map(r => `${r.period}:${r.time.toISOString()}`)).to.deep.equal([
+          windowKey('d', '2026-05-15'),
+          windowKey('d', '2026-05-16'),
+          windowKey('d', '2026-05-17'),
+          windowKey('w', '2026-05-18'),
+          windowKey('w', '2026-05-25'),
+          windowKey('w', '2026-06-01'),
+          windowKey('d', '2026-06-08')
+        ]);
+
+        const psCalls = findAllCalls.filter(c => c.model === 'periodStat');
+        expect(psCalls.map(c => c.opts.where.period)).to.deep.equal(['d', 'w']);
 
         await fastify.close();
       });
@@ -760,7 +833,15 @@ describe('@kne/fastify-statistics', function () {
         const startTime = new Date('2026-05-01T00:00:00.000Z');
         const endTime = new Date('2026-05-01T01:00:00.000Z');
 
-        const cacheKey = 'statistics:query:' + JSON.stringify({ channels: ['sensor'], startTime: startTime.toISOString(), endTime: endTime.toISOString(), attributeNames: [], aggregates: ['sum'], timezone: '', includeChildren: false });
+        const cacheKey = 'statistics:query:' + JSON.stringify({
+          channels: ['sensor'],
+          startTime: startTime.toISOString(),
+          endTime: endTime.toISOString(),
+          attributeNames: [],
+          aggregates: ['sum'],
+          timezone: '',
+          includeChildren: false
+        });
         cacheStore[cacheKey] = 'not-an-object';
 
         periodStatRows.push(

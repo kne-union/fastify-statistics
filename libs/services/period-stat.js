@@ -668,6 +668,47 @@ module.exports = fp(async (fastify, options) => {
     return tree;
   };
 
+  const QUERY_PERIOD_ORDER = ['y', 'q', 'm', 'w', 'd', 'h'];
+
+  const isAlignedToPeriod = (date, period) => {
+    return PERIOD_CONFIG[period].truncateTime(date).getTime() === new Date(date).getTime();
+  };
+
+  const buildQueryWindows = (startTime, endTime, currentHourStart) => {
+    const queryEndTime = dayjs(endTime).isAfter(currentHourStart) ? currentHourStart : endTime;
+    const windows = [];
+    let cursor = new Date(startTime);
+    const end = new Date(queryEndTime);
+
+    while (cursor < end) {
+      let selected = null;
+
+      for (const period of QUERY_PERIOD_ORDER) {
+        const config = PERIOD_CONFIG[period];
+        if (!isAlignedToPeriod(cursor, period)) continue;
+
+        const nextTime = config.getNextStart(cursor);
+        if (nextTime <= end) {
+          selected = { period, time: new Date(cursor), nextTime };
+          break;
+        }
+      }
+
+      if (!selected) {
+        const hourStart = dayjs(cursor).startOf('hour').toDate();
+        const nextHour = PERIOD_CONFIG.h.getNextStart(hourStart);
+        windows.push({ period: 'h', time: hourStart });
+        cursor = nextHour > cursor && nextHour <= end ? nextHour : end;
+        continue;
+      }
+
+      windows.push({ period: selected.period, time: selected.time });
+      cursor = selected.nextTime;
+    }
+
+    return windows;
+  };
+
   const query = async ({ channels, startTime, endTime, attributeNames, aggregates: queryAggregates, timezone: tz, includeChildren }) => {
     const aggregateList = queryAggregates && queryAggregates.length > 0 ? queryAggregates : AGGREGATE_TYPES.map(a => a.key);
 
@@ -728,18 +769,26 @@ module.exports = fp(async (fastify, options) => {
     const attrWhere = attributeNames && attributeNames.length > 0 ? { attributeName: { [Op.in]: attributeNames } } : {};
 
     const allRecords = [];
+    const windows = buildQueryWindows(startTime, endTime, currentHourStart);
+    const windowsByPeriod = windows.reduce((map, window) => {
+      if (!map[window.period]) map[window.period] = [];
+      map[window.period].push(window.time);
+      return map;
+    }, {});
 
-    const records = await models.periodStat.findAll({
-      where: {
-        ...channelWhere,
-        ...attrWhere,
-        period: { [Op.in]: Object.keys(PERIOD_CONFIG) },
-        time: { [Op.between]: [startTime, endTime] },
-        aggregate: { [Op.in]: aggregateList }
-      },
-      raw: true
-    });
-    allRecords.push(...records);
+    for (const [period, times] of Object.entries(windowsByPeriod)) {
+      const records = await models.periodStat.findAll({
+        where: {
+          ...channelWhere,
+          ...attrWhere,
+          period,
+          time: { [Op.in]: times },
+          aggregate: { [Op.in]: aggregateList }
+        },
+        raw: true
+      });
+      allRecords.push(...records);
+    }
 
     const endTimeDayjs = dayjs(endTime);
 

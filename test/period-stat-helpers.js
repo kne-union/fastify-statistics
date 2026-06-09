@@ -6,6 +6,55 @@ const mockPeriodStatService = async (fastify, options) => {
   await fastify[options.name || 'statistics'].services.periodStat.init();
 };
 
+const toTime = value => new Date(value).getTime();
+
+const matchesScalarCondition = (value, condition) => {
+  if (!condition || typeof condition !== 'object' || Array.isArray(condition)) {
+    return value === condition;
+  }
+  if (condition.in) return condition.in.includes(value);
+  if (condition.like) {
+    const pattern = String(condition.like).replaceAll('\\%', '%').replaceAll('\\_', '_');
+    return String(value || '').startsWith(pattern.replace(/%$/, ''));
+  }
+  return true;
+};
+
+const startOfHour = value => {
+  const date = new Date(value);
+  date.setMinutes(0, 0, 0);
+  return date.getTime();
+};
+
+const matchesDateCondition = (value, condition, period) => {
+  if (!condition || typeof condition !== 'object' || Array.isArray(condition)) {
+    return toTime(value) === toTime(condition);
+  }
+  const time = toTime(value);
+  if (condition.in) {
+    return condition.in.some(item => toTime(item) === time || (period === 'h' && startOfHour(item) === startOfHour(value)));
+  }
+  if (condition.between) {
+    const [start, end] = condition.between;
+    return time >= toTime(start) && time <= toTime(end);
+  }
+  if (condition.gte && time < toTime(condition.gte)) return false;
+  if (condition.gt && time <= toTime(condition.gt)) return false;
+  if (condition.lte && time > toTime(condition.lte)) return false;
+  if (condition.lt && time >= toTime(condition.lt)) return false;
+  return true;
+};
+
+const matchesPeriodStatWhere = (row, where = {}) => {
+  if (where.or) return where.or.some(branch => matchesPeriodStatWhere(row, branch));
+  if (where.period && !matchesScalarCondition(row.period, where.period)) return false;
+  if (where.channel && !matchesScalarCondition(row.channel, where.channel)) return false;
+  if (where.attributeName && row.attributeName != null && !matchesScalarCondition(row.attributeName, where.attributeName)) return false;
+  if (where.aggregate && !matchesScalarCondition(row.aggregate, where.aggregate)) return false;
+  if (where.time && !matchesDateCondition(row.time, where.time, row.period)) return false;
+  return true;
+};
+
 const createMockFastify = () => {
   const findAllResults = [];
   const bulkCreateCalls = [];
@@ -82,11 +131,7 @@ const createQueryMockFastify = () => {
       bulkCreate: async () => {},
       findAll: async (opts) => {
         findAllCalls.push({ model: 'periodStat', opts });
-        const period = opts.where && opts.where.period;
-        if (period && period.in) {
-          return periodStatRows.filter(row => period.in.includes(row.period));
-        }
-        return periodStatRows.filter(row => !period || row.period === period);
+        return periodStatRows.filter(row => matchesPeriodStatWhere(row, opts.where));
       },
       findOne: async () => null
     },
@@ -147,11 +192,7 @@ const createCacheTestMockFastify = () => {
       bulkCreate: async () => {},
       findAll: async (opts) => {
         findAllCalls.push({ model: 'periodStat', opts });
-        const period = opts.where && opts.where.period;
-        if (period && period.in) {
-          return periodStatRows.filter(row => period.in.includes(row.period));
-        }
-        return periodStatRows.filter(row => !period || row.period === period);
+        return periodStatRows.filter(row => matchesPeriodStatWhere(row, opts.where));
       },
       findOne: async () => null
     },
@@ -218,11 +259,7 @@ const createExternalCacheMockFastify = () => {
       bulkCreate: async () => {},
       findAll: async (opts) => {
         findAllCalls.push({ model: 'periodStat', opts });
-        const period = opts.where && opts.where.period;
-        if (period && period.in) {
-          return periodStatRows.filter(row => period.in.includes(row.period));
-        }
-        return periodStatRows;
+        return periodStatRows.filter(row => matchesPeriodStatWhere(row, opts.where));
       },
       findOne: async () => null
     },
@@ -284,11 +321,7 @@ const createCompensateMockFastify = () => {
         return records;
       },
       findAll: async (opts) => {
-        const period = opts.where && opts.where.period;
-        if (period) {
-          return periodStatRows.filter(r => r.period === period);
-        }
-        return periodStatRows.splice(0);
+        return periodStatRows.filter(row => matchesPeriodStatWhere(row, opts.where));
       },
       findOne: async () => null
     },
@@ -349,14 +382,7 @@ const createFullMockFastify = () => {
       },
       findAll: async (opts) => {
         findAllCalls.push({ model: 'periodStat', opts });
-        const period = opts.where && opts.where.period;
-        if (period && typeof period === 'object' && period.in) {
-          return periodStatRows.filter(row => period.in.includes(row.period));
-        }
-        if (typeof period === 'string') {
-          return periodStatRows.filter(row => row.period === period);
-        }
-        return [...periodStatRows];
+        return periodStatRows.filter(row => matchesPeriodStatWhere(row, opts.where));
       },
       findOne: async () => null
     },
