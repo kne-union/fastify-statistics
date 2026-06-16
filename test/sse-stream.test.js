@@ -1057,4 +1057,87 @@ describe('@kne/fastify-statistics', function () {
       await fastify.close();
     });
   });
+
+  describe('runTask 长任务 SSE', () => {
+    it('should emit progress and done events for successful task', async () => {
+      const { fastify } = createSSEFastify();
+      await mockSSEStreamService(fastify, { name: 'statistics' });
+
+      fastify.get('/task-sse', async (request, reply) => {
+        return fastify.statistics.services.sseStream.runTask(reply, {
+          name: 'rebuild',
+          heartbeatInterval: 60000,
+          task: async ({ emit }) => {
+            emit('progress', { stage: 'start', message: 'starting' });
+            emit('progress', { stage: 'aggregate', detail: { period: 'h', processed: 1 } });
+            return { mode: 'aggregate-only', windowCounts: { h: 1 } };
+          }
+        });
+      });
+
+      await fastify.listen({ port: 0 });
+      const { body } = await connectSSE(`http://127.0.0.1:${fastify.server.address().port}/task-sse`, { duration: 300 });
+      const events = parseSSEEvents(body);
+      const progressEvents = events.filter(item => item.event === 'progress');
+      const doneEvent = events.find(item => item.event === 'done');
+
+      expect(progressEvents.length).to.be.at.least(2);
+      expect(JSON.parse(progressEvents[0].data).stage).to.equal('start');
+      expect(JSON.parse(doneEvent.data).success).to.be.true;
+      expect(JSON.parse(doneEvent.data).windowCounts.h).to.equal(1);
+
+      await fastify.close();
+    });
+
+    it('should emit error event when task throws', async () => {
+      const { fastify } = createSSEFastify();
+      await mockSSEStreamService(fastify, { name: 'statistics' });
+
+      fastify.get('/task-sse', async (request, reply) => {
+        return fastify.statistics.services.sseStream.runTask(reply, {
+          name: 'rebuild',
+          heartbeatInterval: 60000,
+          task: async () => {
+            const error = new Error('rebuild failed');
+            error.statusCode = 500;
+            throw error;
+          }
+        });
+      });
+
+      await fastify.listen({ port: 0 });
+      const { body } = await connectSSE(`http://127.0.0.1:${fastify.server.address().port}/task-sse`, { duration: 300 });
+      const errorEvent = parseSSEEvents(body).find(item => item.event === 'error');
+
+      expect(errorEvent).to.exist;
+      expect(JSON.parse(errorEvent.data).message).to.equal('rebuild failed');
+      expect(JSON.parse(errorEvent.data).statusCode).to.equal(500);
+
+      await fastify.close();
+    });
+
+    it('should send heartbeat comments during long task', async () => {
+      const { fastify } = createSSEFastify();
+      await mockSSEStreamService(fastify, { name: 'statistics' });
+
+      fastify.get('/task-sse', async (request, reply) => {
+        return fastify.statistics.services.sseStream.runTask(reply, {
+          name: 'rebuild',
+          heartbeatInterval: 50,
+          task: async ({ emit }) => {
+            await new Promise(resolve => setTimeout(resolve, 150));
+            emit('progress', { stage: 'done-local' });
+            return { ok: true };
+          }
+        });
+      });
+
+      await fastify.listen({ port: 0 });
+      const { body } = await connectSSE(`http://127.0.0.1:${fastify.server.address().port}/task-sse`, { duration: 400 });
+      const heartbeats = body.split('\n\n').filter(part => part.includes(': heartbeat'));
+
+      expect(heartbeats.length).to.be.at.least(1);
+      await fastify.close();
+    });
+  });
 });

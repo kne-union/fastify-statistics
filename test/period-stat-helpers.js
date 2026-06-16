@@ -439,6 +439,111 @@ const createFullMockFastify = () => {
   };
 };
 
+const createRebuildMockFastify = () => {
+  const findAllResults = [];
+  const destroyCalls = [];
+  const flushCalls = [];
+  const bulkCreateCalls = [];
+  const watermarkStore = {};
+  let dataRecordMinTime = null;
+
+  const mockTransaction = {
+    commit: async () => {},
+    rollback: async () => {}
+  };
+
+  const mockModel = {
+    dataRecord: {
+      findAll: async () => findAllResults.splice(0),
+      findOne: async opts => {
+        if (opts?.attributes && dataRecordMinTime) {
+          return { minTime: dataRecordMinTime };
+        }
+        return null;
+      },
+      destroy: async opts => {
+        destroyCalls.push({ model: 'dataRecord', opts });
+        return 3;
+      }
+    },
+    periodStat: {
+      bulkCreate: async (records, opts) => {
+        bulkCreateCalls.push({ records: [...records], opts: opts || {} });
+        return records;
+      },
+      findAll: async () => [],
+      findOne: async () => null,
+      destroy: async opts => {
+        destroyCalls.push({ model: 'periodStat', opts });
+        return 5;
+      }
+    },
+    channelMeta: {
+      findAll: async () => [],
+      destroy: async opts => {
+        destroyCalls.push({ model: 'channelMeta', opts });
+        return 1;
+      }
+    },
+    aggregationWatermark: {
+      findOne: async ({ where }) => {
+        const entry = watermarkStore[where.period];
+        if (!entry) return null;
+        return {
+          ...entry,
+          update: async values => {
+            Object.assign(entry, values);
+          }
+        };
+      },
+      create: async data => {
+        watermarkStore[data.period] = data;
+        return data;
+      },
+      destroy: async opts => {
+        destroyCalls.push({ model: 'aggregationWatermark', opts });
+        const count = Object.keys(watermarkStore).length;
+        Object.keys(watermarkStore).forEach(key => delete watermarkStore[key]);
+        return count;
+      }
+    }
+  };
+
+  const fastify = require('fastify')();
+
+  fastify.decorate('sequelize', {
+    Sequelize: {
+      Op: { between: 'between', like: 'like', or: 'or', in: 'in', gte: 'gte', lt: 'lt', lte: 'lte' },
+      fn: (name, col) => `${name}(${col})`,
+      col: name => name
+    },
+    instance: { transaction: async () => mockTransaction }
+  });
+
+  fastify.decorate('statistics', {
+    models: mockModel,
+    services: {
+      dataRecord: {
+        flush: async () => {
+          flushCalls.push(Date.now());
+        }
+      }
+    }
+  });
+
+  return {
+    fastify,
+    findAllResults,
+    destroyCalls,
+    flushCalls,
+    bulkCreateCalls,
+    watermarkStore,
+    setDataRecordMinTime: time => {
+      dataRecordMinTime = time;
+    }
+  };
+};
+
 module.exports = {
   mockPeriodStatService,
   createMockFastify,
@@ -446,5 +551,6 @@ module.exports = {
   createCacheTestMockFastify,
   createExternalCacheMockFastify,
   createCompensateMockFastify,
-  createFullMockFastify
+  createFullMockFastify,
+  createRebuildMockFastify
 };

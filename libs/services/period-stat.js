@@ -6,6 +6,9 @@ const timezone = require('dayjs/plugin/timezone');
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
+const { escapeLike, resolveChannelScope, buildChannelWhere, filterLeafChannels, flattenTreeToList } = require('../common/channel-utils');
+const { normalizeToFlatRecords, rollupTotals, summarizeWindows } = require('../common/normalize-query-result');
+
 const PERIOD_CONFIG = {
   h: {
     label: '时',
@@ -75,7 +78,9 @@ const AGGREGATE_TYPES = [
 ];
 
 const UPSERT_FIELDS = ['data', 'unit'];
-const escapeLike = str => str.replace(/[%_\\]/g, '\\$&');
+
+const REBUILD_MODES = ['aggregate-only', 'reset-and-aggregate', 'repair'];
+const DEFAULT_CLEAR_TABLES = ['dataRecord', 'periodStat', 'aggregationWatermark', 'channelMeta'];
 
 const createHashKey = obj => {
   const sorted = Object.keys(obj)
@@ -375,8 +380,12 @@ module.exports = fp(async (fastify, options) => {
 
   const compensatingLocks = {};
   let startupCompensating = false;
+  let rebuilding = false;
+  let rebuildTaskPromise = null;
   let initialized = false;
-  const isCompensating = () => startupCompensating || Object.values(compensatingLocks).some(v => v);
+  const dataRetentionDays = options.dataRetentionDays ?? 7;
+  const isCompensating = () => rebuilding || startupCompensating || Object.values(compensatingLocks).some(v => v);
+  const isRebuilding = () => rebuilding;
 
   const compensate = async (period, { maxWindows } = {}) => {
     if (compensatingLocks[period]) return;
@@ -709,8 +718,9 @@ module.exports = fp(async (fastify, options) => {
     return windows;
   };
 
-  const query = async ({ channels, startTime, endTime, attributeNames, aggregates: queryAggregates, timezone: tz, includeChildren }) => {
+  const query = async ({ channels, startTime, endTime, attributeNames, aggregates: queryAggregates, timezone: tz, includeChildren, channelScope, maxDepth }) => {
     const aggregateList = queryAggregates && queryAggregates.length > 0 ? queryAggregates : AGGREGATE_TYPES.map(a => a.key);
+    const resolvedScope = resolveChannelScope({ channelScope, includeChildren });
 
     if (tz) {
       try {
@@ -725,12 +735,9 @@ module.exports = fp(async (fastify, options) => {
     }
 
     const channelList = Array.isArray(channels) ? channels : channels ? [channels] : [];
-    // 写入数据全使用服务器时间，isRealtime 和 currentHourStart 必须基于服务器时间判断
-    // 因为数据是按服务器时间分桶聚合的，客户端时区仅影响展示层的日期/小时转换
     const currentHourStart = dayjs().startOf('hour').toDate();
     const isRealtime = dayjs(endTime).isAfter(currentHourStart);
 
-    // Query cache
     if (queryCacheEnabled && !isCompensating()) {
       const cacheKey = createHashKey({
         channels: channelList,
@@ -739,7 +746,8 @@ module.exports = fp(async (fastify, options) => {
         attributeNames: attributeNames || [],
         aggregates: aggregateList,
         timezone: tz || '',
-        includeChildren: !!includeChildren
+        channelScope: resolvedScope,
+        maxDepth: maxDepth || null
       });
 
       const cached = await queryCacheGet(cacheKey);
@@ -747,24 +755,39 @@ module.exports = fp(async (fastify, options) => {
         return cached;
       }
 
-      const result = await doQuery({ channelList, startTime, endTime, attributeNames, aggregateList, tz, includeChildren, currentHourStart, isRealtime });
+      const result = await doQuery({
+        channelList,
+        startTime,
+        endTime,
+        attributeNames,
+        aggregateList,
+        tz,
+        channelScope: resolvedScope,
+        maxDepth,
+        currentHourStart,
+        isRealtime
+      });
       const ttl = isRealtime ? queryCacheTTL : queryCacheHistoryTTL;
       await queryCacheSet(cacheKey, result, ttl, channelList);
       return result;
     }
 
-    return await doQuery({ channelList, startTime, endTime, attributeNames, aggregateList, tz, includeChildren, currentHourStart, isRealtime });
+    return await doQuery({
+      channelList,
+      startTime,
+      endTime,
+      attributeNames,
+      aggregateList,
+      tz,
+      channelScope: resolvedScope,
+      maxDepth,
+      currentHourStart,
+      isRealtime
+    });
   };
 
-  const doQuery = async ({ channelList, startTime, endTime, attributeNames, aggregateList, tz, includeChildren, currentHourStart, isRealtime }) => {
-    const channelWhere =
-      channelList.length > 0
-        ? includeChildren
-          ? {
-              [Op.or]: channelList.flatMap(ch => [{ channel: ch }, { channel: { [Op.like]: `${escapeLike(ch)}:%` } }])
-            }
-          : { channel: { [Op.in]: channelList } }
-        : {};
+  const doQuery = async ({ channelList, startTime, endTime, attributeNames, aggregateList, tz, channelScope, maxDepth, currentHourStart, isRealtime }) => {
+    const channelWhere = buildChannelWhere(channelList, channelScope, Op);
 
     const attrWhere = attributeNames && attributeNames.length > 0 ? { attributeName: { [Op.in]: attributeNames } } : {};
 
@@ -856,8 +879,19 @@ module.exports = fp(async (fastify, options) => {
 
     results.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
 
+    let filteredResults = results;
+    if (channelScope === 'descendantsFlat') {
+      const leafChannels = new Set(
+        filterLeafChannels(
+          results.map(item => item.channel),
+          { maxDepth }
+        )
+      );
+      filteredResults = results.filter(item => leafChannels.has(item.channel));
+    }
+
     const rootChannelSet = new Set();
-    for (const r of results) {
+    for (const r of filteredResults) {
       rootChannelSet.add(r.channel.split(':')[0]);
     }
 
@@ -872,9 +906,17 @@ module.exports = fp(async (fastify, options) => {
       }
     }
 
-    const list = includeChildren ? buildChannelTree(results, channelList) : results;
+    const list = channelScope === 'descendantsTree' ? buildChannelTree(filteredResults, channelList) : filteredResults;
 
-    return { channelMetas, list };
+    return {
+      channelMetas,
+      list,
+      meta: {
+        channelScope,
+        isRealtime,
+        windowsUsed: windows.map(w => ({ period: w.period, time: w.time, count: 1 }))
+      }
+    };
   };
 
   /**
@@ -932,13 +974,227 @@ module.exports = fp(async (fastify, options) => {
     return result;
   };
 
+  const getRetentionPolicy = () => ({
+    dataRecord: {
+      days: dataRetentionDays,
+      cleanupCron: '0 2 * * *'
+    },
+    periodStat: {
+      h: { retain: 'currentMonth', cleanupCron: '0 3 * * *' },
+      d: { retain: 'currentYear' },
+      w: { retain: 'currentYear' },
+      m: { retain: 'permanent' },
+      q: { retain: 'permanent' },
+      y: { retain: 'permanent' }
+    }
+  });
+
+  const queryFlat = async params => {
+    const aggregateList = params.aggregates && params.aggregates.length > 0 ? params.aggregates : AGGREGATE_TYPES.map(a => a.key);
+    const result = await query(params);
+    const isTree = result.list.some(item => item.items || item.children);
+    const flatList = isTree ? flattenTreeToList(result.list) : result.list;
+    const records = normalizeToFlatRecords(flatList, aggregateList);
+    return {
+      channelMetas: result.channelMetas,
+      records,
+      meta: result.meta || {}
+    };
+  };
+
+  const queryTotals = async params => {
+    const { includeRecords = false, ...queryParams } = params;
+    const flatResult = await queryFlat(queryParams);
+    const rollup = rollupTotals(flatResult.records);
+    return {
+      meta: {
+        retentionPolicy: getRetentionPolicy().periodStat,
+        windowsUsed: flatResult.meta?.windowsUsed || summarizeWindows(flatResult.records),
+        isRealtime: flatResult.meta?.isRealtime || false,
+        channelScope: flatResult.meta?.channelScope
+      },
+      totals: rollup.totals,
+      totalsByChannel: rollup.totalsByChannel,
+      maxByChannel: rollup.maxByChannel,
+      attrStats: rollup.attrStats,
+      channelMetas: flatResult.channelMetas,
+      ...(includeRecords ? { records: flatResult.records } : {})
+    };
+  };
+
+  const clearAll = async ({ tables = DEFAULT_CLEAR_TABLES, flushBuffer = true } = {}) => {
+    const statsServices = fastify[options.name].services;
+    const deleted = {};
+
+    if (flushBuffer && statsServices?.dataRecord?.flush) {
+      await statsServices.dataRecord.flush();
+    }
+
+    const forceDestroy = { where: {}, force: true };
+    if (tables.includes('dataRecord') && models.dataRecord) {
+      deleted.dataRecord = await models.dataRecord.destroy(forceDestroy);
+    }
+    if (tables.includes('periodStat') && models.periodStat) {
+      deleted.periodStat = await models.periodStat.destroy(forceDestroy);
+    }
+    if (tables.includes('aggregationWatermark') && models.aggregationWatermark) {
+      deleted.aggregationWatermark = await models.aggregationWatermark.destroy(forceDestroy);
+    }
+    if (tables.includes('channelMeta') && models.channelMeta) {
+      deleted.channelMeta = await models.channelMeta.destroy(forceDestroy);
+    }
+
+    invalidateQueryCache();
+    return { deleted };
+  };
+
+  const inferRebuildStartTime = async channelFilter => {
+    const where = {};
+    if (channelFilter) {
+      where.channel = { [Op.like]: channelFilter };
+    }
+    const row = await models.dataRecord.findOne({
+      attributes: [[fn('MIN', col('time')), 'minTime']],
+      where,
+      raw: true
+    });
+    return row?.minTime ? PERIOD_CONFIG.h.truncateTime(new Date(row.minTime)) : null;
+  };
+
+  const aggregatePeriodToEnd = async (period, startTime, endTime, { onProgress, maxWindows = Infinity } = {}) => {
+    const config = PERIOD_CONFIG[period];
+    let nextTime = config.truncateTime(new Date(startTime));
+    const endTruncated = config.truncateTime(endTime ? new Date(endTime) : new Date());
+    let count = 0;
+
+    while (nextTime < endTruncated && count < maxWindows) {
+      const windowEnd = config.getNextStart(nextTime);
+      await aggregate(period, { startTime: nextTime, endTime: windowEnd });
+      nextTime = windowEnd;
+      await setWatermark(period, nextTime);
+      count++;
+
+      if (typeof onProgress === 'function') {
+        onProgress({
+          stage: 'aggregate',
+          message: `聚合 ${config.label || period} 周期`,
+          detail: { period, processed: count }
+        });
+      }
+    }
+
+    return count;
+  };
+
+  const rebuild = async ({ mode = 'aggregate-only', startTime = null, endTime = null, periods = PERIOD_ORDER, channelFilter = null, maxWindows = Infinity, onProgress, beforeAggregate, afterAggregate } = {}) => {
+    if (!REBUILD_MODES.includes(mode)) {
+      throw new Error(`Unsupported rebuild mode: ${mode}, supported: ${REBUILD_MODES.join(',')}`);
+    }
+    if (rebuildTaskPromise) {
+      const error = new Error('Rebuild already in progress');
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const emit = payload => {
+      if (typeof onProgress === 'function') {
+        onProgress(payload);
+      }
+    };
+
+    const run = async () => {
+      rebuilding = true;
+      const windowCounts = {};
+      const watermarks = {};
+
+      try {
+        emit({ stage: 'start', message: '开始重建统计聚合' });
+
+        const statsServices = fastify[options.name].services;
+        if (statsServices?.dataRecord?.flush) {
+          emit({ stage: 'flush', message: '刷新采集缓冲区' });
+          await statsServices.dataRecord.flush();
+        }
+
+        if (mode === 'reset-and-aggregate') {
+          emit({ stage: 'clear', message: '清空统计数据表' });
+          await clearAll();
+        }
+
+        if (typeof beforeAggregate === 'function') {
+          await beforeAggregate({ mode, channelFilter });
+        }
+
+        let hStart = startTime ? PERIOD_CONFIG.h.truncateTime(new Date(startTime)) : await inferRebuildStartTime(channelFilter);
+        if (!hStart && mode !== 'repair') {
+          fastify.log.warn('rebuild: 无 data_record 数据，跳过聚合');
+          return { success: true, mode, windowCounts, watermarks, skipped: true };
+        }
+
+        if (mode === 'repair') {
+          if (!startTime || !endTime) {
+            throw new Error('repair mode requires startTime and endTime');
+          }
+          const repairStart = PERIOD_CONFIG.h.truncateTime(new Date(startTime));
+          const repairEnd = PERIOD_CONFIG.h.truncateTime(new Date(endTime));
+          await resetPeriodStats('h', { startTime: repairStart, endTime: repairEnd, cascade: true });
+          hStart = repairStart;
+        }
+
+        const aggregateEnd = endTime ? new Date(endTime) : new Date();
+        const downstreamPeriods = periods.filter(period => PERIOD_ORDER.includes(period));
+        const dStart = PERIOD_CONFIG.d.truncateTime(hStart);
+
+        for (const period of downstreamPeriods) {
+          const periodStart = period === 'h' ? hStart : dStart;
+          if (!periodStart) {
+            continue;
+          }
+          await setWatermark(period, periodStart);
+          windowCounts[period] = await aggregatePeriodToEnd(period, periodStart, aggregateEnd, {
+            onProgress: emit,
+            maxWindows
+          });
+          watermarks[period] = await getWatermark(period);
+        }
+
+        if (typeof afterAggregate === 'function') {
+          await afterAggregate({ mode, channelFilter, windowCounts, watermarks });
+        }
+
+        emit({ stage: 'done', message: '重建完成' });
+        return { success: true, mode, windowCounts, watermarks };
+      } finally {
+        rebuilding = false;
+      }
+    };
+
+    rebuildTaskPromise = run();
+    try {
+      return await rebuildTaskPromise;
+    } finally {
+      rebuildTaskPromise = null;
+    }
+  };
+
+  const isRebuildInProgress = () => !!rebuildTaskPromise;
+
   Object.assign(fastify[options.name].services, {
     query,
     periodStat: {
       init,
       aggregate,
       query,
+      queryFlat,
+      queryTotals,
+      rebuild,
+      clearAll,
+      getRetentionPolicy,
+      getWatermark,
+      setWatermark,
       isCompensating,
+      isRebuilding,
+      isRebuildInProgress,
       invalidateQueryCache,
       cleanupOldPeriodStats,
       resetPeriodStats
