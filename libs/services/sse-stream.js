@@ -173,7 +173,109 @@ module.exports = fp(async (fastify, options) => {
     return { isConnected: () => isConnected, close: cleanup, onClose };
   };
 
+  /**
+   * Run a long-running task with SSE progress events
+   * @param {object} reply - Fastify reply object
+   * @param {object} config
+   * @param {string} config.name - Task name for logging
+   * @param {function} config.task - Async ({ emit }) => result; emit(event, data)
+   * @param {number} [config.heartbeatInterval=15000]
+   * @param {number} [config.maxDuration=1800000]
+   */
+  const runTask = async (reply, { name, task, heartbeatInterval = 15000, maxDuration = DEFAULT_MAX_DURATION }) => {
+    const res = reply.raw;
+    const log = reply.log;
+    const startTime = Date.now();
+
+    reply.hijack();
+
+    const replyHeaders = reply.getHeaders();
+    for (const [headerName, value] of Object.entries(replyHeaders)) {
+      res.setHeader(headerName, value);
+    }
+
+    res.writeHead(200, SSE_HEADERS);
+
+    let isConnected = true;
+    let heartbeatTimer = null;
+    const closeCallbacks = [];
+
+    const cleanup = () => {
+      if (!isConnected) return;
+      isConnected = false;
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+      for (const cb of closeCallbacks) {
+        try {
+          cb();
+        } catch (e) {
+          log.error({ err: e }, 'SSE task close callback error');
+        }
+      }
+      closeCallbacks.length = 0;
+      if (!res.writableEnded) {
+        res.end();
+      }
+    };
+
+    const safeWrite = data => {
+      if (!isConnected || res.writableEnded) return false;
+      const canWrite = res.write(data);
+      if (!canWrite) {
+        cleanup();
+        return false;
+      }
+      return true;
+    };
+
+    const emit = (event, data) => {
+      if (!isConnected || res.writableEnded) return;
+      safeWrite(formatEvent(event, data));
+    };
+
+    heartbeatTimer = setInterval(() => {
+      if (!isConnected || res.writableEnded) {
+        cleanup();
+        return;
+      }
+      safeWrite(': heartbeat\n\n');
+    }, heartbeatInterval);
+    heartbeatTimer.unref();
+
+    res.on('close', () => {
+      if (isConnected) cleanup();
+    });
+
+    const timeoutTimer = setTimeout(() => {
+      if (!isConnected) return;
+      emit('error', { message: '连接已超过最大时长，自动断开', statusCode: 408 });
+      cleanup();
+    }, maxDuration);
+    timeoutTimer.unref();
+
+    try {
+      const result = await task({
+        emit: (event, data) => emit(event, data)
+      });
+      if (isConnected) {
+        emit('done', { success: true, ...result });
+      }
+    } catch (err) {
+      log.error({ err, name }, 'SSE task error');
+      if (isConnected) {
+        emit('error', { message: err.message, statusCode: err.statusCode || 500 });
+      }
+    } finally {
+      clearTimeout(timeoutTimer);
+      cleanup();
+    }
+
+    return { isConnected: () => isConnected, close: cleanup, onClose: callback => closeCallbacks.push(callback) };
+  };
+
   Object.assign(fastify[options.name].services, {
-    sseStream: { send }
+    sseStream: { send, runTask }
   });
 });

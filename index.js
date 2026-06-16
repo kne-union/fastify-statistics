@@ -25,7 +25,8 @@ module.exports = fp(
               throw new Error('接口禁止访问');
             }
           ];
-        }
+        },
+        onRebuild: null
       },
       options
     );

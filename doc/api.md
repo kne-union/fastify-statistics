@@ -16,7 +16,7 @@
 | queryCacheTTL | number | `30` | 实时查询缓存TTL(秒) |
 | queryCacheHistoryTTL | number | `3600` | 历史查询缓存TTL(秒) |
 | queryCacheMaxEntries | number | `100` | 内存查询缓存最大条数（仅无外部缓存时生效） |
-| getAuthenticate | function | 抛出异常 | 鉴权函数，参数为 `'read'` 或 `'write'` |
+| onRebuild | object | `null` | 重建 hook：`{ beforeAggregate, afterAggregate }`，参数为 `(fastify, ctx)` |
 
 ### 数据采集
 
@@ -62,9 +62,16 @@
 | attributeNames | string | 否 | 全部 | 属性名列表(逗号分隔) |
 | aggregates | string | 否 | 全部 | 聚合方法列表(逗号分隔): sum,avg,count,min,max |
 | timezone | string | 否 | 服务器时区 | 客户端时区(IANA格式，如 Asia/Shanghai) |
-| includeChildren | boolean | 否 | false | 是否包含子通道数据 |
+| includeChildren | boolean | 否 | false | 是否包含子通道数据（等同 `channelScope=descendantsTree`） |
+| channelScope | string | 否 | exact | `exact` / `descendantsFlat` / `descendantsTree` |
+| maxDepth | number | 否 | - | `descendantsFlat` 时限制 channel 层级 |
+| format | string | 否 | default | `default` / `flat` / `totals` |
 
-**通道匹配规则**：默认只精确匹配传入的 channels。`includeChildren=true` 时，传入 `sensor` 匹配 `sensor` 和 `sensor:*` 的所有通道，返回树形结构。
+**通道匹配规则**：
+
+- `exact`（默认）：仅精确匹配 channels
+- `descendantsTree` / `includeChildren=true`：匹配子通道，返回树形结构
+- `descendantsFlat`：匹配子通道，返回**扁平叶子 channel** 列表（避免父级重复计数）
 
 **返回格式**：
 
@@ -150,6 +157,31 @@
 | `error` | fetchData 出错时的错误事件 |
 | 注释行（`: heartbeat`） | 心跳保活 |
 
+#### GET `{prefix}/rebuild/sse`
+
+聚合重建进度 SSE（长任务，非轮询 query）。
+
+**查询参数**：
+
+| 属性名 | 类型 | 必填 | 默认值 | 说明 |
+|--------|------|------|--------|------|
+| mode | string | 否 | aggregate-only | `aggregate-only` / `reset-and-aggregate` / `repair` |
+| channelFilter | string | 否 | - | 推断起始时间的 channel LIKE，如 `interview:%` |
+| startTime | string | 否 | - | repair 或显式起始时间(ISO) |
+| endTime | string | 否 | - | repair 或显式结束时间(ISO) |
+| periods | string | 否 | h,d,w,m,q,y | 聚合周期列表(逗号分隔) |
+
+**SSE 事件**：
+
+| 事件 | 说明 |
+|------|------|
+| `progress` | `{ stage, message?, percent?, detail? }` |
+| `done` | `{ success: true, mode, windowCounts, watermarks }` |
+| `error` | `{ message, statusCode? }` |
+| 注释行 | 心跳保活 |
+
+宿主可通过插件选项 `onRebuild.beforeAggregate` / `onRebuild.afterAggregate` 注入采集与校验逻辑。
+
 ### 程序化 API
 
 通过 `fastify.statistics.services` 访问：
@@ -176,6 +208,15 @@
 | `services.periodStat.init()` | 初始化水位线并执行启动补偿（插件 onReady 自动调用） |
 | `services.periodStat.aggregate(period, opts)` | 手动触发指定周期的聚合。`opts.startTime`/`opts.endTime` 可选，默认聚合上一个时间窗口 |
 | `services.periodStat.query(params)` | 同 `services.query` |
+| `services.periodStat.queryFlat(params)` | 保留策略感知查询 + 扁平 `records` |
+| `services.periodStat.queryTotals(params)` | 在 `queryFlat` 之上汇总 `totals` / `totalsByChannel` / `maxByChannel` |
+| `services.periodStat.rebuild(opts)` | 聚合重建（支持 `onProgress`） |
+| `services.periodStat.clearAll(opts)` | 清空统计表（flush → destroy） |
+| `services.periodStat.getRetentionPolicy()` | 读取保留策略 |
+| `services.periodStat.getWatermark(period)` | 读取聚合水位线 |
+| `services.periodStat.setWatermark(period, nextTime)` | 设置聚合水位线 |
+| `services.periodStat.isRebuilding()` | 是否正在 rebuild |
+| `services.periodStat.isRebuildInProgress()` | 是否有 rebuild 任务 Promise |
 | `services.periodStat.isCompensating()` | 当前是否正在执行补偿聚合 |
 | `services.periodStat.invalidateQueryCache(channels?)` | 使查询缓存失效。传入 channels 时只失效相关通道，不传则失效全部 |
 | `services.periodStat.cleanupOldPeriodStats()` | 清理过期的周期统计数据 |
@@ -192,6 +233,50 @@
 
 **返回值**：`{ period, deletedCount, nextTime, cascade_h?, cascade_d?, ... }`
 
+#### queryFlat 参数
+
+与 `query` 相同，另支持 `channelScope`、`maxDepth`。
+
+**返回值**：`{ channelMetas, records: FlatRecord[], meta: { channelScope, isRealtime, windowsUsed } }`
+
+#### queryTotals 参数
+
+与 `queryFlat` 相同，另支持 `includeRecords`（默认 false）。
+
+**返回值**：
+
+```js
+{
+  meta: { retentionPolicy, windowsUsed, isRealtime, channelScope },
+  totals: { [attributeName]: number },
+  totalsByChannel: { [channel]: { [attributeName]: number } },
+  maxByChannel: { [channel]: { [attributeName]: number } },
+  attrStats: { [attributeName]: { sum, max, count } },
+  channelMetas: {},
+  records?: FlatRecord[]
+}
+```
+
+#### rebuild 参数
+
+| 属性名 | 类型 | 必填 | 默认值 | 说明 |
+|--------|------|------|--------|------|
+| mode | string | 否 | aggregate-only | `aggregate-only` / `reset-and-aggregate` / `repair` |
+| startTime | Date | 否 | MIN(data_record.time) | 聚合起始（truncate 到 h） |
+| endTime | Date | 否 | now | 聚合结束 |
+| periods | string[] | 否 | h,d,w,m,q,y | 要重建的周期 |
+| channelFilter | string | 否 | - | 推断 startTime 的 LIKE 过滤 |
+| maxWindows | number | 否 | Infinity | 单周期最大窗口数 |
+| onProgress | function | 否 | - | 进度回调 |
+| beforeAggregate | function | 否 | - | 清库后、聚合前（宿主采集 hook） |
+| afterAggregate | function | 否 | - | 聚合后（宿主校验 hook） |
+
+**返回值**：`{ success, mode, windowCounts, watermarks, skipped? }`
+
+并发：重复调用抛 `409 Rebuild already in progress`。
+
+详见 [summary.md](./summary.md) 中「数据保留策略」「查询辅助 API」「重置、重建与修复」章节。
+
 #### channelMeta 服务
 
 | 方法 | 说明 |
@@ -204,7 +289,8 @@
 
 | 方法 | 说明 |
 |------|------|
-| `services.sseStream.send(reply, config)` | 发送 SSE 实时数据流 |
+| `services.sseStream.send(reply, config)` | 发送 SSE 实时数据流（轮询 query） |
+| `services.sseStream.runTask(reply, config)` | 发送 SSE 长任务进度流 |
 
 **send 配置**：
 
@@ -224,6 +310,17 @@
 | `isConnected()` | 返回当前连接状态 |
 | `close()` | 手动关闭 SSE 连接 |
 | `onClose(callback)` | 注册连接关闭回调，若已断开则立即执行 |
+
+**runTask 配置**：
+
+| config 属性 | 类型 | 必填 | 默认值 | 说明 |
+|-------------|------|------|--------|------|
+| name | string | 是 | - | 任务名称（日志） |
+| task | function | 是 | - | 异步 `({ emit }) => result`，`emit(event, data)` |
+| heartbeatInterval | number | 否 | `15000` | 心跳间隔(ms) |
+| maxDuration | number | 否 | `1800000` | 最大连接时长(ms) |
+
+任务完成后自动发送 `done` 事件；异常时发送 `error` 事件。
 
 ### 数据模型
 

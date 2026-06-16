@@ -97,6 +97,119 @@ npm i --save @kne/fastify-statistics
 - `data` 传入对象时自动展开（如 `{revenue: 10000, orders: 50}` → 两条记录）
 - `unit` 支持字符串（所有属性共用）或对象（按 attributeName 映射不同单位）
 
+### 通道统计设计案例
+
+当一个业务希望统计“某类事件在不同来源、不同小时桶中的完成量”时，容易把 **统计周期**、**通道层级** 和 **查询返回结构** 混在一起。正确做法是先确定需要在查询结果中保留的维度，再把这些维度建模到 channel 或 attributeName 中。
+
+#### 场景抽象
+
+| 需求 | 推荐建模 | 说明 |
+|------|----------|------|
+| 查询总量 | `event` | 根通道自动汇总所有子通道 |
+| 按来源查询 | `event:web`、`event:api` | 第二级通道表示来源 |
+| 按小时桶查询 | `event:web:00`、`event:web:01` | 第三级通道表示固定小时桶 |
+| 按指标类型查询 | attributeName | 同一通道下多个数值指标更适合放在 attributeName |
+
+> **关键设计**：`period=h/d/m` 是系统内部按时间窗口聚合后的存储周期，不应承担业务维度拆分职责。业务需要稳定输出的维度，应在采集时进入 channel 或 attributeName。
+
+#### 数据流
+
+```
+采集 event:web:13
+        ↓ 自动展开
+event:web:13 → event:web → event
+        ↓ 聚合
+period-stat(h/d/m/...)
+        ↓ 查询
+精确通道列表 或 includeChildren 树形结果
+```
+
+| 阶段 | 行为 | 注意事项 |
+|------|------|----------|
+| 采集 | 多级 channel 自动展开为自身及所有父级 | 父级已经包含子级汇总 |
+| 聚合 | 每个展开后的 channel 独立生成周期统计 | 父级和子级不是互斥数据 |
+| 查询 | 默认只匹配传入的精确 channel | 需要子树时才使用 `includeChildren=true` |
+| 消费 | 根据返回结构选择汇总方式 | 不要把父级与子级再次相加 |
+
+#### 常见错误
+
+| 错误做法 | 问题 | 正确做法 |
+|----------|------|----------|
+| 长区间 Dashboard 直查 `period=h` | h 仅保留当月，历史会被清理 | 使用 `query()` / `queryFlat()` / `queryTotals()` |
+| 查询根通道后再期望自动得到每个小时桶 | 默认查询只返回精确匹配通道 | 显式查询所有叶子通道，或使用 `channelScope: 'descendantsFlat'` |
+| 对 `includeChildren=true` 的树形结果做扁平求和 | 父级已经包含子级汇总，容易重复计数 | 使用 `channelScope: 'descendantsFlat'` 只取叶子，或只查询叶子通道 |
+| 依赖查询结果中的 `period=h` 构建长范围小时分布 | 查询会按对齐窗口选择较粗周期，长范围可能返回 d/m/y | 将小时桶作为 channel 维度，如 `event:web:13` |
+| 用一个宽泛 channel 表达多个正交维度 | 后续筛选和拆桶需要猜测字符串含义 | 固定维度顺序，例如 `event:{source}:{hour}` |
+
+#### 推荐查询
+
+**channelScope**（比 `includeChildren` 更语义化）：
+
+| channelScope | 行为 | 典型场景 |
+|--------------|------|----------|
+| `exact`（默认） | 仅精确匹配 channels | 已知叶子 channel |
+| `descendantsFlat` | 匹配子通道，返回**扁平叶子 channel** | 按父 channel 查所有子项且避免重复计数 |
+| `descendantsTree` | 匹配子通道，返回树形结构 | 等同 `includeChildren=true`，层级浏览 |
+
+采集时 `expandChannel('a:b:c')` 会同时写入 `a`、`a:b`、`a:b:c`。`descendantsFlat` 默认只返回叶子 channel，避免父级与子级同时汇总导致重复计数。可选 `maxDepth` 限制冒号层级。
+
+如果目标是得到每个来源在 24 个小时桶中的分布，可枚举叶子通道（`channelScope: 'exact'`），或使用 `descendantsFlat` 传入父 channel：
+
+```js
+// 方式一：显式枚举叶子通道
+const sources = ['web', 'api'];
+const hours = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+const channels = sources.flatMap(source => hours.map(hour => `event:${source}:${hour}`));
+
+const result = await fastify.statistics.services.query({
+  channels,
+  startTime: '2026-05-01T00:00:00.000Z',
+  endTime: '2026-06-01T00:00:00.000Z',
+  aggregates: ['sum']
+});
+
+// 方式二：父 channel + descendantsFlat（无需手动枚举）
+const flatResult = await fastify.statistics.services.periodStat.queryFlat({
+  channels: ['event'],
+  channelScope: 'descendantsFlat',
+  maxDepth: 3,
+  startTime: '2026-05-01T00:00:00.000Z',
+  endTime: '2026-06-01T00:00:00.000Z',
+  aggregates: ['sum']
+});
+```
+
+返回结果是扁平列表，调用方可以直接按 channel 解析来源和小时桶：
+
+```json
+{
+  "channelMetas": {
+    "event": { "channel": "event", "title": "事件统计", "description": "事件完成量" }
+  },
+  "list": [
+    {
+      "channel": "event:web:13",
+      "period": "m",
+      "time": "2026-05-01T00:00:00.000Z",
+      "data": { "default": 128 }
+    }
+  ]
+}
+```
+
+#### 使用 includeChildren 的边界
+
+`includeChildren=true` 适合展示通道树，或让使用方按层级浏览数据；它不适合直接作为“按叶子维度分桶”的扁平数据源。
+
+| 查询方式 | 返回形态 | 适合场景 |
+|----------|----------|----------|
+| `channels=['event:web:13']` | 扁平列表 | 精确叶子桶统计 |
+| `channels=['event:web']` | 扁平列表 | 来源汇总 |
+| `channels=['event:web'], includeChildren=true` | 树形结构 | 展示来源及其小时子桶 |
+| `channels=[所有叶子通道]` | 扁平列表 | 构建固定维度趋势图 |
+
+> **经验教训**：通道层级查询的第一原则是先决定“结果要哪个层级”。如果结果要叶子桶，就枚举叶子桶；如果结果要父级汇总，就查父级；如果结果要层级浏览，再使用 `includeChildren=true`。
+
 ### 水位线机制与补偿聚合
 
 **水位线（aggregation-watermark）** 记录每个周期下一次应聚合的起始时间，是补偿聚合的核心：
@@ -131,17 +244,23 @@ npm i --save @kne/fastify-statistics
 
 ### 数据保留策略
 
-通过 Cron 定时清理过期数据，避免数据无限增长：
+通过 Cron 定时清理过期数据，避免数据无限增长。可通过 `periodStat.getRetentionPolicy()` 读取当前策略。
 
-| 数据类型 | 保留策略 | 安全检查 |
-|----------|----------|----------|
-| data-record | `dataRetentionDays` 天（默认 7 天） | 不超过 h 周期水位线 |
-| period-stat(h) | 当月 | 不超过 d 周期水位线 |
-| period-stat(d) | 当年 | 不超过 w、m 周期水位线 |
-| period-stat(w) | 当年 | 无下游依赖 |
-| period-stat(m/q/y) | 永久保留 | - |
+| 数据类型 | 保留策略 | 清理时机 | 安全检查 |
+|----------|----------|----------|----------|
+| data-record | `dataRetentionDays` 天（默认 7 天） | 每天 02:00 | 不超过 h 周期水位线 |
+| period-stat(h) | **当月** | 每天 03:00 | 不超过 d 周期水位线 |
+| period-stat(d) | **当年** | 每天 03:00 | 不超过 w、m 周期水位线 |
+| period-stat(w) | **当年** | 每天 03:00 | 无下游依赖 |
+| period-stat(m/q/y) | **永久保留** | 不清理 | - |
 
 **安全检查**：删除前检查下游水位线，确保尚未聚合的数据不会被提前删除。
+
+#### 为什么不能只查 `period=h`
+
+`period=h` 会在每月初之后被清理，仅保留当月数据。若应用层直接 `findAll({ where: { period: 'h' } })` 做长区间 KPI，统计会在运行一段时间后「突然变少」——新增一条采集后可能只剩当月/当天少量数据。
+
+**正确做法**：使用 `query()` / `queryFlat()` / `queryTotals()`，由 `buildQueryWindows` 按区间自动组合 `y → q → m → w → d → h`，并合并当前小时未聚合的 `data_record`。
 
 ### 缓冲写入模式
 
@@ -169,6 +288,31 @@ npm i --save @kne/fastify-statistics
 
 **缓存失效**：采集数据时自动调用 `invalidateQueryCache(affectedChannels)`，递增对应通道及其所有前缀的版本号。
 
+### 查询辅助 API
+
+在保留策略下做长区间统计时，优先使用以下 API，避免手写 period 组合与 flatten 逻辑：
+
+| 场景 | API |
+|------|-----|
+| 需要原始扁平行 | `periodStat.queryFlat(params)` |
+| 需要全局/按 channel 汇总 | `periodStat.queryTotals(params)` |
+| 需要树形子通道 | `query({ channelScope: 'descendantsTree' })` |
+| 需要扁平叶子子通道 | `query({ channelScope: 'descendantsFlat', maxDepth? })` |
+
+`queryTotals` 返回 `totals`（全局 sum）、`totalsByChannel`、`maxByChannel`（对 max 取 `Math.max`，禁止对小时 max 求和）、`attrStats` 等。HTTP 查询支持 `format=flat|totals`。
+
+```js
+const result = await fastify.statistics.services.periodStat.queryTotals({
+  channels: [`interview:${clientId}`],
+  channelScope: 'descendantsFlat',
+  maxDepth: 3,
+  startTime,
+  endTime,
+  aggregates: ['sum', 'max']
+});
+// result.totals / result.totalsByChannel / result.maxByChannel
+```
+
 ### SSE 实时推送
 
 基于 Server-Sent Events 的实时统计推送：
@@ -179,13 +323,38 @@ npm i --save @kne/fastify-statistics
 - 防止推送重叠：当前推送未完成时跳过下一次
 - 缓存复用：相同 `name`+`params`+`interval` 在同一时间窗口内命中缓存
 
-### 重置与修复
+**长任务进度 SSE**（`sseStream.runTask`）：用于聚合重建等耗时操作，推送 `progress` / `done` / `error` 事件，而非轮询 query。HTTP：`GET {prefix}/rebuild/sse`。
+
+### 重置、重建与修复
 
 提供 `resetPeriodStats` 方法用于修复错误的聚合数据：
 
 - 删除指定周期和时间范围的 period-stat 记录
 - 重置水位线到指定起始点
 - 支持 `cascade=true` 级联重置下游周期（如重置 h 时同时重置依赖 h 的 d、w、m、q、y）
+
+**聚合重建**（`periodStat.rebuild`）用于历史修复或初始化回填后的重聚合：
+
+| mode | 行为 |
+|------|------|
+| `aggregate-only`（默认） | flush buffer → 从 `MIN(data_record.time)` 或 `startTime` 重聚合 h→y |
+| `reset-and-aggregate` | 先 `clearAll` → 宿主 `beforeAggregate` hook 写入 data_record → 聚合 |
+| `repair` | 指定 `[startTime, endTime)` 区间局部 `resetPeriodStats` + 重聚合 |
+
+```js
+await fastify.statistics.services.periodStat.rebuild({
+  mode: 'reset-and-aggregate',
+  onProgress: payload => { /* stage: start | flush | clear | aggregate | done */ },
+  beforeAggregate: async () => { /* 宿主业务采集 */ },
+  afterAggregate: async () => { /* 宿主一致性校验 */ }
+});
+```
+
+宿主集成建议：
+
+1. 禁止业务 Dashboard 直查 `period=h` 做全量 KPI
+2. 按父 channel 查所有子项时，用 `channelScope: 'descendantsFlat'` 代替手动枚举
+3. 回填脚本只保留领域 collect/verify 逻辑，聚合循环交给 `rebuild`
 
 ### 技术栈
 
@@ -201,7 +370,9 @@ npm i --save @kne/fastify-statistics
 - **缓冲写入**：支持缓存缓冲模式，定时批量写入数据库，减少写入压力
 - **多周期聚合**：h/d/w/m/q/y 六种统计周期，自动通过 Cron 定时聚合
 - **聚合方法**：sum、avg、count、min、max 五种聚合计算
-- **灵活查询**：按通道、时间范围、属性名、聚合方法查询统计结果，自动合并当前小时未聚合的原始数据
+- **灵活查询**：按通道、时间范围、属性名、聚合方法查询统计结果，自动合并当前小时未聚合的原始数据；`queryFlat` / `queryTotals` 开箱即用
+- **子通道查询**：`channelScope` 支持扁平叶子子通道（`descendantsFlat`）与树形（`descendantsTree`）
+- **聚合重建**：`rebuild` + SSE 进度，宿主通过 hook 注入采集与校验
 - **SSE 实时推送**：基于 Server-Sent Events 的实时数据推送
 - **时区支持**：查询时支持传入客户端时区（IANA 格式）
 - **事务安全**：所有数据库写操作使用事务保证原子性，聚合操作支持幂等（upsert）
@@ -645,7 +816,7 @@ await fastify.statistics.services.periodStat.cleanupOldPeriodStats();
 | queryCacheTTL | number | `30` | 实时查询缓存TTL(秒) |
 | queryCacheHistoryTTL | number | `3600` | 历史查询缓存TTL(秒) |
 | queryCacheMaxEntries | number | `100` | 内存查询缓存最大条数（仅无外部缓存时生效） |
-| getAuthenticate | function | 抛出异常 | 鉴权函数，参数为 `'read'` 或 `'write'` |
+| onRebuild | object | `null` | 重建 hook：`{ beforeAggregate, afterAggregate }`，参数为 `(fastify, ctx)` |
 
 ### 数据采集
 
@@ -691,9 +862,16 @@ await fastify.statistics.services.periodStat.cleanupOldPeriodStats();
 | attributeNames | string | 否 | 全部 | 属性名列表(逗号分隔) |
 | aggregates | string | 否 | 全部 | 聚合方法列表(逗号分隔): sum,avg,count,min,max |
 | timezone | string | 否 | 服务器时区 | 客户端时区(IANA格式，如 Asia/Shanghai) |
-| includeChildren | boolean | 否 | false | 是否包含子通道数据 |
+| includeChildren | boolean | 否 | false | 是否包含子通道数据（等同 `channelScope=descendantsTree`） |
+| channelScope | string | 否 | exact | `exact` / `descendantsFlat` / `descendantsTree` |
+| maxDepth | number | 否 | - | `descendantsFlat` 时限制 channel 层级 |
+| format | string | 否 | default | `default` / `flat` / `totals` |
 
-**通道匹配规则**：默认只精确匹配传入的 channels。`includeChildren=true` 时，传入 `sensor` 匹配 `sensor` 和 `sensor:*` 的所有通道，返回树形结构。
+**通道匹配规则**：
+
+- `exact`（默认）：仅精确匹配 channels
+- `descendantsTree` / `includeChildren=true`：匹配子通道，返回树形结构
+- `descendantsFlat`：匹配子通道，返回**扁平叶子 channel** 列表（避免父级重复计数）
 
 **返回格式**：
 
@@ -779,6 +957,31 @@ await fastify.statistics.services.periodStat.cleanupOldPeriodStats();
 | `error` | fetchData 出错时的错误事件 |
 | 注释行（`: heartbeat`） | 心跳保活 |
 
+#### GET `{prefix}/rebuild/sse`
+
+聚合重建进度 SSE（长任务，非轮询 query）。
+
+**查询参数**：
+
+| 属性名 | 类型 | 必填 | 默认值 | 说明 |
+|--------|------|------|--------|------|
+| mode | string | 否 | aggregate-only | `aggregate-only` / `reset-and-aggregate` / `repair` |
+| channelFilter | string | 否 | - | 推断起始时间的 channel LIKE，如 `interview:%` |
+| startTime | string | 否 | - | repair 或显式起始时间(ISO) |
+| endTime | string | 否 | - | repair 或显式结束时间(ISO) |
+| periods | string | 否 | h,d,w,m,q,y | 聚合周期列表(逗号分隔) |
+
+**SSE 事件**：
+
+| 事件 | 说明 |
+|------|------|
+| `progress` | `{ stage, message?, percent?, detail? }` |
+| `done` | `{ success: true, mode, windowCounts, watermarks }` |
+| `error` | `{ message, statusCode? }` |
+| 注释行 | 心跳保活 |
+
+宿主可通过插件选项 `onRebuild.beforeAggregate` / `onRebuild.afterAggregate` 注入采集与校验逻辑。
+
 ### 程序化 API
 
 通过 `fastify.statistics.services` 访问：
@@ -805,6 +1008,15 @@ await fastify.statistics.services.periodStat.cleanupOldPeriodStats();
 | `services.periodStat.init()` | 初始化水位线并执行启动补偿（插件 onReady 自动调用） |
 | `services.periodStat.aggregate(period, opts)` | 手动触发指定周期的聚合。`opts.startTime`/`opts.endTime` 可选，默认聚合上一个时间窗口 |
 | `services.periodStat.query(params)` | 同 `services.query` |
+| `services.periodStat.queryFlat(params)` | 保留策略感知查询 + 扁平 `records` |
+| `services.periodStat.queryTotals(params)` | 在 `queryFlat` 之上汇总 `totals` / `totalsByChannel` / `maxByChannel` |
+| `services.periodStat.rebuild(opts)` | 聚合重建（支持 `onProgress`） |
+| `services.periodStat.clearAll(opts)` | 清空统计表（flush → destroy） |
+| `services.periodStat.getRetentionPolicy()` | 读取保留策略 |
+| `services.periodStat.getWatermark(period)` | 读取聚合水位线 |
+| `services.periodStat.setWatermark(period, nextTime)` | 设置聚合水位线 |
+| `services.periodStat.isRebuilding()` | 是否正在 rebuild |
+| `services.periodStat.isRebuildInProgress()` | 是否有 rebuild 任务 Promise |
 | `services.periodStat.isCompensating()` | 当前是否正在执行补偿聚合 |
 | `services.periodStat.invalidateQueryCache(channels?)` | 使查询缓存失效。传入 channels 时只失效相关通道，不传则失效全部 |
 | `services.periodStat.cleanupOldPeriodStats()` | 清理过期的周期统计数据 |
@@ -821,6 +1033,50 @@ await fastify.statistics.services.periodStat.cleanupOldPeriodStats();
 
 **返回值**：`{ period, deletedCount, nextTime, cascade_h?, cascade_d?, ... }`
 
+#### queryFlat 参数
+
+与 `query` 相同，另支持 `channelScope`、`maxDepth`。
+
+**返回值**：`{ channelMetas, records: FlatRecord[], meta: { channelScope, isRealtime, windowsUsed } }`
+
+#### queryTotals 参数
+
+与 `queryFlat` 相同，另支持 `includeRecords`（默认 false）。
+
+**返回值**：
+
+```js
+{
+  meta: { retentionPolicy, windowsUsed, isRealtime, channelScope },
+  totals: { [attributeName]: number },
+  totalsByChannel: { [channel]: { [attributeName]: number } },
+  maxByChannel: { [channel]: { [attributeName]: number } },
+  attrStats: { [attributeName]: { sum, max, count } },
+  channelMetas: {},
+  records?: FlatRecord[]
+}
+```
+
+#### rebuild 参数
+
+| 属性名 | 类型 | 必填 | 默认值 | 说明 |
+|--------|------|------|--------|------|
+| mode | string | 否 | aggregate-only | `aggregate-only` / `reset-and-aggregate` / `repair` |
+| startTime | Date | 否 | MIN(data_record.time) | 聚合起始（truncate 到 h） |
+| endTime | Date | 否 | now | 聚合结束 |
+| periods | string[] | 否 | h,d,w,m,q,y | 要重建的周期 |
+| channelFilter | string | 否 | - | 推断 startTime 的 LIKE 过滤 |
+| maxWindows | number | 否 | Infinity | 单周期最大窗口数 |
+| onProgress | function | 否 | - | 进度回调 |
+| beforeAggregate | function | 否 | - | 清库后、聚合前（宿主采集 hook） |
+| afterAggregate | function | 否 | - | 聚合后（宿主校验 hook） |
+
+**返回值**：`{ success, mode, windowCounts, watermarks, skipped? }`
+
+并发：重复调用抛 `409 Rebuild already in progress`。
+
+详见 [summary.md](./summary.md) 中「数据保留策略」「查询辅助 API」「重置、重建与修复」章节。
+
 #### channelMeta 服务
 
 | 方法 | 说明 |
@@ -833,7 +1089,8 @@ await fastify.statistics.services.periodStat.cleanupOldPeriodStats();
 
 | 方法 | 说明 |
 |------|------|
-| `services.sseStream.send(reply, config)` | 发送 SSE 实时数据流 |
+| `services.sseStream.send(reply, config)` | 发送 SSE 实时数据流（轮询 query） |
+| `services.sseStream.runTask(reply, config)` | 发送 SSE 长任务进度流 |
 
 **send 配置**：
 
@@ -853,6 +1110,17 @@ await fastify.statistics.services.periodStat.cleanupOldPeriodStats();
 | `isConnected()` | 返回当前连接状态 |
 | `close()` | 手动关闭 SSE 连接 |
 | `onClose(callback)` | 注册连接关闭回调，若已断开则立即执行 |
+
+**runTask 配置**：
+
+| config 属性 | 类型 | 必填 | 默认值 | 说明 |
+|-------------|------|------|--------|------|
+| name | string | 是 | - | 任务名称（日志） |
+| task | function | 是 | - | 异步 `({ emit }) => result`，`emit(event, data)` |
+| heartbeatInterval | number | 否 | `15000` | 心跳间隔(ms) |
+| maxDuration | number | 否 | `1800000` | 最大连接时长(ms) |
+
+任务完成后自动发送 `done` 事件；异常时发送 `error` 事件。
 
 ### 数据模型
 
