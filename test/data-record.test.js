@@ -1067,6 +1067,135 @@ describe('@kne/fastify-statistics', function () {
       });
     });
 
+    describe('purgeDeleted 物理清理测试', () => {
+      it('should force destroy soft-deleted dataRecord and periodStat', async () => {
+        const { fastify, cache } = createMockFastify();
+        const destroyCalls = [];
+
+        fastify.sequelize.Sequelize.Op = { ne: Symbol('ne'), lt: Symbol('lt') };
+        fastify.statistics.models.dataRecord.destroy = async (opts) => {
+          destroyCalls.push({ model: 'dataRecord', opts });
+          return 4;
+        };
+        fastify.statistics.models.periodStat = {
+          destroy: async (opts) => {
+            destroyCalls.push({ model: 'periodStat', opts });
+            return 2;
+          }
+        };
+        fastify.statistics.models.aggregationWatermark = { findOne: async () => null };
+
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1000,
+          cache
+        });
+
+        const result = await fastify.statistics.services.dataRecord.purgeDeleted();
+        expect(result).to.deep.equal({ dataRecord: 4, periodStat: 2 });
+        expect(destroyCalls).to.have.length(2);
+        for (const call of destroyCalls) {
+          expect(call.opts.force).to.be.true;
+          expect(call.opts.paranoid).to.be.false;
+          expect(call.opts.where).to.have.property('deletedAt');
+        }
+
+        await fastify.close();
+      });
+
+      it('should register purge cron with default and custom schedule', async () => {
+        const { fastify, cache } = createMockFastify();
+        const createdJobs = [];
+
+        fastify.statistics.models.dataRecord.destroy = async () => 0;
+        fastify.statistics.models.periodStat = { destroy: async () => 0 };
+        fastify.statistics.models.aggregationWatermark = { findOne: async () => null };
+        fastify.decorate('cron', {
+          createJob: (jobConfig) => {
+            createdJobs.push(jobConfig);
+          }
+        });
+
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1000,
+          cache,
+          purgeDeletedCron: '0 22 * * *'
+        });
+
+        const purgeJob = createdJobs.find(j => j.name === 'statistics-purge-deleted');
+        expect(purgeJob).to.exist;
+        expect(purgeJob.cronTime).to.equal('0 22 * * *');
+        expect(purgeJob.startWhenReady).to.be.true;
+
+        await purgeJob.onTick();
+        await fastify.close();
+      });
+
+      it('should catch error in purge cron onTick', async () => {
+        const { fastify, cache } = createMockFastify();
+        const createdJobs = [];
+        let errorLogged = false;
+        const origLogError = fastify.log.error;
+        fastify.log.error = function (msg) {
+          errorLogged = true;
+          return origLogError ? origLogError.call(this, msg) : undefined;
+        };
+
+        fastify.statistics.models.dataRecord.destroy = async () => {
+          throw new Error('Purge error');
+        };
+        fastify.statistics.models.periodStat = { destroy: async () => 0 };
+        fastify.statistics.models.aggregationWatermark = { findOne: async () => null };
+        fastify.decorate('cron', {
+          createJob: (jobConfig) => {
+            createdJobs.push(jobConfig);
+          }
+        });
+
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1000,
+          cache
+        });
+
+        const purgeJob = createdJobs.find(j => j.name === 'statistics-purge-deleted');
+        await purgeJob.onTick();
+        expect(errorLogged).to.be.true;
+
+        fastify.log.error = origLogError;
+        await fastify.close();
+      });
+
+      it('should not register purge cron when purgeDeletedCron is falsy', async () => {
+        const { fastify, cache } = createMockFastify();
+        const createdJobs = [];
+
+        fastify.statistics.models.dataRecord.destroy = async () => 0;
+        fastify.statistics.models.periodStat = { destroy: async () => 0 };
+        fastify.statistics.models.aggregationWatermark = { findOne: async () => null };
+        fastify.decorate('cron', {
+          createJob: (jobConfig) => {
+            createdJobs.push(jobConfig);
+          }
+        });
+
+        await mockDataRecordService(fastify, {
+          name: 'statistics',
+          collectFlushInterval: 60000,
+          collectMaxBufferSize: 1000,
+          cache,
+          purgeDeletedCron: false
+        });
+
+        expect(createdJobs.find(j => j.name === 'statistics-purge-deleted')).to.be.undefined;
+        await fastify.close();
+      });
+    });
+
     describe('channelMetaId 赋值测试', () => {
       it('should assign channelMetaId in collectBuffered mode', async () => {
         const { fastify, bulkCreateCalls, channelMetaCalls, cache } = createMockFastify({ maxBufferSize: 1 });

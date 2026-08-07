@@ -200,6 +200,7 @@ module.exports = fp(async (fastify, options) => {
   const collect = cache ? collectBuffered : collectImmediate;
 
   const dataRetentionDays = options.dataRetentionDays ?? 7;
+  const purgeDeletedCron = options.purgeDeletedCron ?? '0 2 * * *';
 
   const cleanupOldDataRecords = async () => {
     const cutoffTime = dayjs().subtract(dataRetentionDays, 'day').toDate();
@@ -214,6 +215,21 @@ module.exports = fp(async (fastify, options) => {
       log.info(`Cleaned up ${count} old data records before ${safeCutoff.toISOString()}`);
     }
     return count;
+  };
+
+  // 物理删除 data_record / period_stat 中已软删（deleted_at 不为空）的记录
+  const purgeDeletedRecords = async () => {
+    const forceWhere = {
+      where: { deletedAt: { [Op.ne]: null } },
+      force: true,
+      paranoid: false
+    };
+    const dataRecordCount = await models.dataRecord.destroy(forceWhere);
+    const periodStatCount = await models.periodStat.destroy(forceWhere);
+    if (dataRecordCount > 0 || periodStatCount > 0) {
+      log.info(`Purged soft-deleted records: dataRecord=${dataRecordCount}, periodStat=${periodStatCount}`);
+    }
+    return { dataRecord: dataRecordCount, periodStat: periodStatCount };
   };
 
   if (cache) {
@@ -240,6 +256,21 @@ module.exports = fp(async (fastify, options) => {
       },
       startWhenReady: true
     });
+
+    if (purgeDeletedCron) {
+      fastify.cron.createJob({
+        name: 'statistics-purge-deleted',
+        cronTime: purgeDeletedCron,
+        onTick: async () => {
+          try {
+            await purgeDeletedRecords();
+          } catch (e) {
+            log.error(`Failed to purge soft-deleted records: ${e.message}`);
+          }
+        },
+        startWhenReady: true
+      });
+    }
   }
 
   Object.assign(fastify[options.name].services, {
@@ -247,7 +278,8 @@ module.exports = fp(async (fastify, options) => {
     dataRecord: {
       collect,
       flush,
-      cleanup: cleanupOldDataRecords
+      cleanup: cleanupOldDataRecords,
+      purgeDeleted: purgeDeletedRecords
     }
   });
 });

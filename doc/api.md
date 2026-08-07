@@ -12,6 +12,7 @@
 | compensationEnabled | boolean | `true` | 是否启用启动时自动补偿聚合 |
 | compensationBatchSize | number | `24` | 每次补偿聚合的最大窗口数 |
 | dataRetentionDays | number | `7` | 原始数据保留天数 |
+| purgeDeletedCron | string \| false | `0 2 * * *` | 物理清理 data_record / period_stat 软删记录的 Cron；设为 `false` 关闭 |
 | queryCacheEnabled | boolean | `true` | 是否启用查询缓存 |
 | queryCacheTTL | number | `30` | 实时查询缓存TTL(秒) |
 | queryCacheHistoryTTL | number | `3600` | 历史查询缓存TTL(秒) |
@@ -199,7 +200,8 @@
 |------|------|
 | `services.dataRecord.collect(data)` | 同 `services.collect` |
 | `services.dataRecord.flush()` | 手动刷新缓冲区 |
-| `services.dataRecord.cleanup()` | 清理过期的原始数据 |
+| `services.dataRecord.cleanup()` | 清理过期的原始数据（软删） |
+| `services.dataRecord.purgeDeleted()` | 物理删除 data_record / period_stat 中已软删（deleted_at）的记录 |
 
 #### periodStat 服务
 

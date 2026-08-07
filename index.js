@@ -15,6 +15,8 @@ module.exports = fp(
         compensationBatchSize: 24,
         compensationEnabled: true,
         dataRetentionDays: 7,
+        // 物理清理 data_record / period_stat 已软删（deleted_at）数据的 Cron，默认每天 02:00
+        purgeDeletedCron: '0 2 * * *',
         queryCacheEnabled: true,
         queryCacheTTL: 30,
         queryCacheHistoryTTL: 3600,

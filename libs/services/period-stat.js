@@ -986,6 +986,10 @@ module.exports = fp(async (fastify, options) => {
       m: { retain: 'permanent' },
       q: { retain: 'permanent' },
       y: { retain: 'permanent' }
+    },
+    purgeDeleted: {
+      tables: ['dataRecord', 'periodStat'],
+      cleanupCron: options.purgeDeletedCron ?? '0 2 * * *'
     }
   });
 
