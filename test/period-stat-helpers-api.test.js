@@ -213,6 +213,8 @@ describe('@kne/fastify-statistics helpers', function () {
       const policy = fastify.statistics.services.periodStat.getRetentionPolicy();
       expect(policy.dataRecord.days).to.equal(7);
       expect(policy.periodStat.h.retain).to.equal('currentMonth');
+      expect(policy.purgeDeleted.tables).to.deep.equal(['dataRecord', 'periodStat']);
+      expect(policy.purgeDeleted.cleanupCron).to.equal('0 2 * * *');
       await fastify.close();
     });
   });
