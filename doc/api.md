@@ -207,7 +207,7 @@
 
 | 方法 | 说明 |
 |------|------|
-| `services.periodStat.init()` | 初始化水位线并执行启动补偿（插件 onReady 自动调用） |
+| `services.periodStat.init()` | 初始化水位线并执行启动补偿（插件 onReady 触发，**不阻塞** listen；补偿在后台继续） |
 | `services.periodStat.aggregate(period, opts)` | 手动触发指定周期的聚合。`opts.startTime`/`opts.endTime` 可选，默认聚合上一个时间窗口 |
 | `services.periodStat.query(params)` | 同 `services.query` |
 | `services.periodStat.queryFlat(params)` | 保留策略感知查询 + 扁平 `records` |

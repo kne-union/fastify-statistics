@@ -388,6 +388,8 @@ module.exports = fp(async (fastify, options) => {
   const isRebuilding = () => rebuilding;
 
   const compensate = async (period, { maxWindows } = {}) => {
+    // 启动补偿进行中时跳过 cron，避免与 init 内聚合争抢同一水位线
+    if (startupCompensating) return;
     if (compensatingLocks[period]) return;
     compensatingLocks[period] = true;
     try {
@@ -479,10 +481,48 @@ module.exports = fp(async (fastify, options) => {
     }
   };
 
+  const registerPeriodStatCronJobs = () => {
+    if (!fastify.cron) {
+      return;
+    }
+    for (const [period, config] of Object.entries(PERIOD_CONFIG)) {
+      fastify.cron.createJob({
+        name: `statistics-period-stat-${period}`,
+        cronTime: config.cronTime,
+        onTick: async () => {
+          try {
+            await compensate(period);
+          } catch (e) {
+            fastify.log.error(`Failed to compensate period ${period}: ${e.message}`);
+          }
+        },
+        startWhenReady: true
+      });
+    }
+
+    fastify.cron.createJob({
+      name: 'statistics-period-stat-cleanup',
+      cronTime: '0 3 * * *',
+      onTick: async () => {
+        try {
+          await cleanupOldPeriodStats();
+        } catch (e) {
+          fastify.log.error(`Failed to cleanup old period-stat records: ${e.message}`);
+        }
+      },
+      startWhenReady: true
+    });
+  };
+
   const init = async () => {
     const maxCompensationWindows = options.maxCompensationWindows ?? Infinity;
     const maxFailCount = options.maxCompensationFailCount ?? 3;
     const compensationEnabled = options.compensationEnabled !== false;
+
+    // 先挂 cron，再跑可能很长的启动补偿，避免补偿阻塞后定时任务迟迟未注册
+    registerPeriodStatCronJobs();
+    initialized = true;
+    fastify.log.info('Period statistics service initialized');
 
     startupCompensating = true;
     try {
@@ -560,39 +600,6 @@ module.exports = fp(async (fastify, options) => {
     } finally {
       startupCompensating = false;
     }
-
-    if (fastify.cron) {
-      for (const [period, config] of Object.entries(PERIOD_CONFIG)) {
-        fastify.cron.createJob({
-          name: `statistics-period-stat-${period}`,
-          cronTime: config.cronTime,
-          onTick: async () => {
-            try {
-              await compensate(period);
-            } catch (e) {
-              fastify.log.error(`Failed to compensate period ${period}: ${e.message}`);
-            }
-          },
-          startWhenReady: true
-        });
-      }
-
-      fastify.cron.createJob({
-        name: 'statistics-period-stat-cleanup',
-        cronTime: '0 3 * * *',
-        onTick: async () => {
-          try {
-            await cleanupOldPeriodStats();
-          } catch (e) {
-            fastify.log.error(`Failed to cleanup old period-stat records: ${e.message}`);
-          }
-        },
-        startWhenReady: true
-      });
-    }
-
-    initialized = true;
-    fastify.log.info('Period statistics service initialized');
   };
 
   const formatGroupData = items => {

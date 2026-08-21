@@ -49,8 +49,12 @@ module.exports = fp(
       ]
     });
 
-    fastify.addHook('onReady', async () => {
-      await fastify[options.name].services.periodStat.init();
+    // 水位线启动补偿可能很长（迁库/水位线过期时可达数十秒），不能 await，否则会触发
+    // Fastify pluginTimeout（默认 10s）导致 FST_ERR_HOOK_TIMEOUT，服务起不来。
+    fastify.addHook('onReady', () => {
+      fastify[options.name].services.periodStat.init().catch(err => {
+        fastify.log.error({ err }, 'Statistics periodStat.init failed');
+      });
     });
   },
   {
