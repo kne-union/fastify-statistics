@@ -18,6 +18,9 @@
 | queryCacheHistoryTTL | number | `3600` | 历史查询缓存TTL(秒) |
 | queryCacheMaxEntries | number | `100` | 内存查询缓存最大条数（仅无外部缓存时生效） |
 | onRebuild | object | `null` | 重建 hook：`{ beforeAggregate, afterAggregate }`，参数为 `(fastify, ctx)` |
+| instanceId | string | `hostname:pid` | 进程指标的 `instance` 标签 |
+| metricsSampleSize | number | `500` | 每个耗时序列保留的最近样本数，用于 P50/P95/P99 |
+| metricsBuckets | number[] | `5,10,25,50,100,250,500,1000,2500,5000` | 耗时直方图上界，单位毫秒 |
 
 ### 数据采集
 
@@ -419,6 +422,38 @@
 | 版本校验 | 缓存条目记录写入时的通道版本号，读取时校验版本是否变化 |
 | TTL 策略 | 实时查询用 `queryCacheTTL`（30s），历史查询用 `queryCacheHistoryTTL`（3600s） |
 | 补偿期间 | 正在执行补偿聚合时查询不走缓存 |
+
+### 进程指标
+
+内存注册表，不写入 `data-record`，也不参与周期聚合。适合在线连接、积压和耗时分位数。可累加的历史合计仍走 `collect` / `query`。
+
+#### 程序化 API
+
+通过 `fastify.statistics.services.metrics` 访问：
+
+| 方法 | 说明 |
+|------|------|
+| `inc(name, labels, by = 1)` | 只增计数。输出名未以 `_total` 结尾时自动补上 |
+| `set(name, value, labels)` | 当前值 |
+| `observe(name, value, labels)` | 非负耗时样本。输出直方图，以及最近样本的 P50/P95/P99 |
+| `render()` | Prometheus 文本 |
+
+`labels` 为字符串键值。每条序列自动带 `instance` 标签，调用方传入的 `instance` 会覆盖默认值。指标名需符合 Prometheus 命名。
+
+#### GET `{prefix}/metrics`
+
+返回 `text/plain`。鉴权类型为 `getAuthenticate('metrics')`，默认与其它接口一样拒绝匿名访问，由宿主按抓取方式放开。
+
+示例：
+
+```js
+const { metrics } = fastify.statistics.services;
+metrics.inc('http_requests', { route: '/order', code: '200' });
+metrics.set('queue_depth', 12, { queue: 'mail' });
+metrics.observe('http_request_ms', 18, { route: '/order' });
+```
+
+抓取结果包含 `http_requests_total`、`queue_depth`、`http_request_ms_bucket` 和 `http_request_ms_quantile`。
 
 ### 数据保留策略
 
