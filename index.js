@@ -1,4 +1,5 @@
 const fp = require('fastify-plugin');
+const os = require('node:os');
 const path = require('node:path');
 
 module.exports = fp(
@@ -21,6 +22,9 @@ module.exports = fp(
         queryCacheTTL: 30,
         queryCacheHistoryTTL: 3600,
         queryCacheMaxEntries: 100,
+        instanceId: `${os.hostname()}:${process.pid}`,
+        metricsSampleSize: 500,
+        metricsBuckets: null,
         getAuthenticate: () => {
           return [
             () => {

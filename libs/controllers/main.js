@@ -78,6 +78,21 @@ module.exports = fp(async (fastify, options) => {
   );
 
   fastify.get(
+    `${options.prefix}/metrics`,
+    {
+      onRequest: options.getAuthenticate('metrics'),
+      schema: {
+        description: '当前进程的计数、当前值和耗时分位数',
+        summary: '进程指标'
+      }
+    },
+    async (request, reply) => {
+      reply.type('text/plain; version=0.0.4; charset=utf-8');
+      return services.metrics.render();
+    }
+  );
+
+  fastify.get(
     `${options.prefix}/query`,
     {
       onRequest: options.getAuthenticate('read'),
