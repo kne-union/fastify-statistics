@@ -18,7 +18,7 @@ module.exports = ({ DataTypes, options }) => {
     },
     options: {
       comment: '通道元数据',
-      indexes: [{ name: `idx${options.modelPrefix || ''}_channel_meta_channel`, unique: true, fields: ['channel'] }]
+      indexes: [{ name: `idx${options.prefix || ''}${options.modelPrefix || ''}_channel_meta_channel`, unique: true, fields: ['channel'] }]
     }
   };
 };

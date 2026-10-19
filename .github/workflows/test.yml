@@ -1,0 +1,11 @@
+name: Unit Test
+on:
+  pull_request:
+    branches: [master]
+jobs:
+  test:
+    uses: kne-union/actions/.github/workflows/node-test.yml@master
+    with:
+      install-command: npm install
+      test-command: npm test
+      node-versions: '["20","22"]'

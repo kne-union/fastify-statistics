@@ -36,22 +36,22 @@ module.exports = ({ DataTypes, options }) => {
       comment: '数据采集记录',
       indexes: [
         {
-          name: `idx${options.modelPrefix || ''}_data_record_channel`,
+          name: `idx${options.prefix || ''}${options.modelPrefix || ''}_data_record_channel`,
           fields: ['channel']
         },
         {
-          name: `idx${options.modelPrefix || ''}_data_record_time`,
+          name: `idx${options.prefix || ''}${options.modelPrefix || ''}_data_record_time`,
           fields: ['time']
         },
         {
-          name: `idx${options.modelPrefix || ''}_data_record_channel_time`,
+          name: `idx${options.prefix || ''}${options.modelPrefix || ''}_data_record_channel_time`,
           fields: ['channel', 'time']
         },
         {
-          name: `idx${options.modelPrefix || ''}_data_record_channel_attr_time`,
+          name: `idx${options.prefix || ''}${options.modelPrefix || ''}_data_record_channel_attr_time`,
           fields: ['channel', 'attribute_name', 'time']
         },
-        { name: `idx${options.modelPrefix || ''}_idx_data_record_attr_name`, fields: ['attribute_name'] }
+        { name: `idx${options.prefix || ''}${options.modelPrefix || ''}_idx_data_record_attr_name`, fields: ['attribute_name'] }
       ]
     }
   };

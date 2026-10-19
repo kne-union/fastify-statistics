@@ -16,7 +16,7 @@ module.exports = ({ DataTypes, options }) => {
       comment: '聚合水位线',
       indexes: [
         {
-          name: `idx${options.modelPrefix || ''}_aggregation_watermark_period`,
+          name: `idx${options.prefix || ''}${options.modelPrefix || ''}_aggregation_watermark_period`,
           unique: true,
           fields: ['period']
         }
