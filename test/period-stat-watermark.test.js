@@ -13,7 +13,7 @@ dayjs.extend(timezone);
  * 包含所有真实 Sequelize 模型，可以直接执行 SQL 查询
  */
 const createSqliteTestEnv = async () => {
-  const sequelize = new Sequelize('sqlite::memory:', { logging: false });
+  const sequelize = new Sequelize({ dialect: 'sqlite', storage: ':memory:', logging: false });
 
   const channelMeta = sequelize.define('watermarkTestChannelMeta', {
     channel: { type: DataTypes.STRING, allowNull: false },
