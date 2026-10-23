@@ -14,4 +14,3 @@ jobs:
       run_test: true
       install-command: npm install
       test-command: npm test
-      node-versions: '["20","22"]'
