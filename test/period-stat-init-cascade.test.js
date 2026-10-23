@@ -12,7 +12,7 @@ dayjs.extend(timezone);
  * 创建基于 SQLite 内存数据库的测试环境
  */
 const createSqliteTestEnv = async () => {
-  const sequelize = new Sequelize('sqlite::memory:', { logging: false });
+  const sequelize = new Sequelize({ dialect: 'sqlite', storage: ':memory:', logging: false });
 
   const channelMeta = sequelize.define('cascadeTestChannelMeta', {
     channel: { type: DataTypes.STRING, allowNull: false },
